@@ -43,9 +43,16 @@ curl --fail --silent "http://127.0.0.1:$port/linux" \
 curl --fail --silent "http://127.0.0.1:$port/windows" \
     | cmp --silent - "$repository_root/deploy/get/public/windows"
 
-linux_headers="$(curl --silent --dump-header - --output /dev/null "http://127.0.0.1:$port/linux")"
-grep -Eiq '^cache-control: no-cache, no-store, must-revalidate\r?$' <<< "$linux_headers"
-grep -Eiq '^x-content-type-options: nosniff\r?$' <<< "$linux_headers"
+cache_control="$(
+    curl --silent --output /dev/null --write-out '%header{cache-control}' \
+        "http://127.0.0.1:$port/linux"
+)"
+content_options="$(
+    curl --silent --output /dev/null --write-out '%header{x-content-type-options}' \
+        "http://127.0.0.1:$port/linux"
+)"
+[[ "$cache_control" == "no-cache, no-store, must-revalidate" ]]
+[[ "$content_options" == "nosniff" ]]
 
 status="$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:$port/missing")"
 [[ "$status" == "404" ]]
