@@ -8,7 +8,15 @@ container="baudbound-get-test-$RANDOM"
 port="18086"
 
 cleanup() {
+    local status="$?"
+    if [[ "$status" -ne 0 ]]; then
+        printf '%s\n' 'Container endpoint test failed. Container state:' >&2
+        docker inspect --format '{{json .State}}' "$container" >&2 || true
+        printf '%s\n' 'Container logs:' >&2
+        docker logs "$container" >&2 || true
+    fi
     docker rm --force "$container" >/dev/null 2>&1 || true
+    return "$status"
 }
 trap cleanup EXIT
 

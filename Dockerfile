@@ -8,3 +8,6 @@ RUN chmod 0444 /etc/nginx/nginx.conf /usr/share/nginx/html/linux /usr/share/ngin
 USER nginx
 
 EXPOSE 8080
+
+ENTRYPOINT ["nginx"]
+CMD ["-g", "daemon off;"]
