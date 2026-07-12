@@ -1,0 +1,206 @@
+#!/bin/sh
+
+set -eu
+
+readonly_default_release_api_url="https://api.github.com/repos/NATroutter/BaudBound/releases/latest"
+release_api_url="${BAUDBOUND_RELEASE_API_URL:-$readonly_default_release_api_url}"
+install_dir="${BAUDBOUND_INSTALL_DIR:-$HOME/.local/opt/baudbound}"
+bin_dir="${BAUDBOUND_BIN_DIR:-$HOME/.local/bin}"
+install_path="$install_dir/BaudBound.AppImage"
+command_path="$bin_dir/baudbound"
+temporary_dir=""
+
+fail() {
+    printf 'BaudBound installer: %s\n' "$1" >&2
+    exit 1
+}
+
+cleanup() {
+    if [ -n "$temporary_dir" ] && [ -d "$temporary_dir" ]; then
+        rm -rf "$temporary_dir"
+    fi
+}
+
+require_command() {
+    if command -v "$1" >/dev/null 2>&1; then
+        return
+    fi
+
+    if [ "$1" = "jq" ]; then
+        printf '%s\n' \
+            "BaudBound installer: jq is required to read GitHub release metadata." \
+            "Install it, then run the installer again." \
+            "Debian or Ubuntu: sudo apt install jq" \
+            "Fedora: sudo dnf install jq" \
+            "Arch Linux: sudo pacman -S jq" >&2
+        exit 1
+    fi
+
+    fail "required command not found: $1"
+}
+
+validate_platform() {
+    [ "$(uname -s)" = "Linux" ] || fail "this installer supports Linux only"
+
+    case "$(uname -m)" in
+        x86_64|amd64) ;;
+        *) fail "only 64-bit x86 Linux is currently supported" ;;
+    esac
+}
+
+validate_release_url() {
+    case "$release_api_url" in
+        https://*) ;;
+        http://127.0.0.1:*|http://localhost:*)
+            [ "${BAUDBOUND_ALLOW_INSECURE_TEST_URL:-}" = "1" ] \
+                || fail "release URL must use HTTPS"
+            ;;
+        *) fail "release URL must use HTTPS" ;;
+    esac
+}
+
+validate_asset_url() {
+    asset_url="$1"
+    case "$asset_url" in
+        https://github.com/NATroutter/BaudBound/releases/download/*) ;;
+        http://127.0.0.1:*|http://localhost:*)
+            [ "${BAUDBOUND_ALLOW_INSECURE_TEST_URL:-}" = "1" ] \
+                || fail "release asset URL is not trusted"
+            ;;
+        *) fail "release asset URL is not trusted" ;;
+    esac
+}
+
+read_release_asset() {
+    release_file="$1"
+    asset_count="$(jq -er '[.assets[] | select(.name | endswith(".AppImage"))] | length' "$release_file")" \
+        || fail "GitHub release metadata is invalid"
+    [ "$asset_count" = "1" ] \
+        || fail "latest release must contain exactly one AppImage"
+
+    asset_name="$(jq -er '[.assets[] | select(.name | endswith(".AppImage"))][0].name' "$release_file")" \
+        || fail "AppImage name is missing from release metadata"
+    asset_url="$(jq -er '[.assets[] | select(.name | endswith(".AppImage"))][0].browser_download_url' "$release_file")" \
+        || fail "AppImage URL is missing from release metadata"
+    published_digest="$(jq -er '[.assets[] | select(.name | endswith(".AppImage"))][0].digest' "$release_file")" \
+        || fail "AppImage digest is missing from release metadata"
+
+    case "$published_digest" in
+        sha256:*) expected_checksum="${published_digest#sha256:}" ;;
+        *) fail "AppImage release digest is not SHA256" ;;
+    esac
+    [ "${#expected_checksum}" -eq 64 ] \
+        || fail "AppImage release digest is invalid"
+    case "$expected_checksum" in
+        *[!0-9a-fA-F]*) fail "AppImage release digest is invalid" ;;
+    esac
+    expected_checksum="$(printf '%s' "$expected_checksum" | tr 'A-F' 'a-f')"
+    validate_asset_url "$asset_url"
+}
+
+file_checksum() {
+    checksum_output="$(sha256sum "$1")"
+    checksum="${checksum_output%% *}"
+    printf '%s' "$checksum" | tr 'A-F' 'a-f'
+}
+
+baudbound_is_running() {
+    [ -d /proc ] || return 1
+
+    for environment_file in /proc/[0-9]*/environ; do
+        [ -r "$environment_file" ] || continue
+        if cat "$environment_file" 2>/dev/null | tr '\000' '\n' \
+            | grep -Fqx "APPIMAGE=$install_path"; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+install_appimage() {
+    downloaded_path="$1"
+    expected_checksum="$2"
+
+    if [ -f "$install_path" ]; then
+        current_checksum="$(file_checksum "$install_path")"
+        if [ "$current_checksum" = "$expected_checksum" ]; then
+            mkdir -p "$bin_dir"
+            ensure_command_link
+            printf 'BaudBound is already up to date.\n'
+            return
+        fi
+    fi
+
+    baudbound_is_running \
+        && fail "BaudBound is running. Quit the desktop app or stop the service, then run this command again."
+
+    mkdir -p "$install_dir" "$bin_dir"
+    staged_path="$(mktemp "$install_dir/.BaudBound.AppImage.XXXXXX")"
+    cp "$downloaded_path" "$staged_path"
+    chmod 0755 "$staged_path"
+
+    staged_checksum="$(file_checksum "$staged_path")"
+    if [ "$staged_checksum" != "$expected_checksum" ]; then
+        rm -f "$staged_path"
+        fail "staged AppImage checksum does not match the published checksum"
+    fi
+
+    mv -f "$staged_path" "$install_path"
+    ensure_command_link
+}
+
+ensure_command_link() {
+    if [ -e "$command_path" ] && [ ! -L "$command_path" ]; then
+        fail "$command_path exists and is not a symbolic link"
+    fi
+    ln -sfn "$install_path" "$command_path"
+}
+
+main() {
+    require_command jq
+    require_command curl
+    require_command grep
+    require_command mktemp
+    require_command sha256sum
+    require_command tr
+    require_command uname
+    validate_platform
+    validate_release_url
+
+    temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/baudbound-install.XXXXXX")"
+    trap cleanup EXIT HUP INT TERM
+
+    release_path="$temporary_dir/release.json"
+    curl --fail --location --silent --show-error \
+        --header "Accept: application/vnd.github+json" \
+        --header "X-GitHub-Api-Version: 2022-11-28" \
+        --output "$release_path" "$release_api_url"
+    read_release_asset "$release_path"
+
+    downloaded_path="$temporary_dir/BaudBound.AppImage"
+    printf 'Downloading %s...\n' "$asset_name"
+    curl --fail --location --silent --show-error \
+        --output "$downloaded_path" "$asset_url"
+
+    actual_checksum="$(file_checksum "$downloaded_path")"
+    [ "$actual_checksum" = "$expected_checksum" ] \
+        || fail "downloaded AppImage checksum does not match the published checksum"
+
+    install_appimage "$downloaded_path" "$expected_checksum"
+
+    if version_output="$("$install_path" --version 2>&1)"; then
+        printf '%s\n' "$version_output"
+    else
+        fail "BaudBound was installed, but it could not start. Check the Linux prerequisites in the installation guide."
+    fi
+
+    case ":${PATH:-}:" in
+        *":$bin_dir:"*) ;;
+        *) printf 'Add %s to PATH to use the baudbound command.\n' "$bin_dir" ;;
+    esac
+
+    printf 'Installed at %s\n' "$install_path"
+}
+
+main "$@"

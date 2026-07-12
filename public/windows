@@ -1,0 +1,151 @@
+[CmdletBinding()]
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$DefaultReleaseApiUrl = "https://api.github.com/repos/NATroutter/BaudBound/releases/latest"
+$ReleaseApiUrl = if ($env:BAUDBOUND_RELEASE_API_URL) {
+    $env:BAUDBOUND_RELEASE_API_URL
+} else {
+    $DefaultReleaseApiUrl
+}
+
+function Stop-Installer {
+    param([Parameter(Mandatory)][string]$Message)
+    throw "BaudBound installer: $Message"
+}
+
+function Assert-SecureUrl {
+    param([Parameter(Mandatory)][string]$Value)
+
+    $uri = [Uri]$Value
+    if ($uri.Scheme -eq "https") {
+        return
+    }
+
+    $isLocalTest = $uri.Scheme -eq "http" -and $uri.IsLoopback
+    if (-not ($isLocalTest -and $env:BAUDBOUND_ALLOW_INSECURE_TEST_URL -eq "1")) {
+        Stop-Installer "release URLs must use HTTPS"
+    }
+}
+
+function Get-InstalledBaudBound {
+    $registryPaths = if (
+        $env:BAUDBOUND_ALLOW_INSECURE_TEST_URL -eq "1" -and
+        $env:BAUDBOUND_UNINSTALL_REGISTRY_PATH
+    ) {
+        @($env:BAUDBOUND_UNINSTALL_REGISTRY_PATH)
+    } else {
+        @(
+            "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+    }
+
+    foreach ($registryPath in $registryPaths) {
+        $match = Get-ItemProperty -Path $registryPath -ErrorAction SilentlyContinue |
+            Where-Object { $_.DisplayName -eq "BaudBound" } |
+            Select-Object -First 1
+        if ($null -ne $match) {
+            return $match
+        }
+    }
+
+    return $null
+}
+
+function Get-PublishedRelease {
+    $headers = @{
+        Accept = "application/vnd.github+json"
+        "User-Agent" = "BaudBound-Installer"
+        "X-GitHub-Api-Version" = "2022-11-28"
+    }
+    $release = Invoke-RestMethod -Uri $ReleaseApiUrl -Headers $headers
+    $tag = [string]$release.tag_name
+    if ($tag -notmatch '^v(?<version>\d+\.\d+\.\d+)$') {
+        Stop-Installer "latest release has an invalid version tag"
+    }
+    $version = $Matches.version
+
+    $assets = @($release.assets | Where-Object { $_.name -match '_x64-setup\.exe$' })
+    if ($assets.Count -ne 1) {
+        Stop-Installer "latest release must contain exactly one 64-bit Windows setup executable"
+    }
+    $asset = $assets[0]
+    if ([string]$asset.browser_download_url -notlike "https://github.com/NATroutter/BaudBound/releases/download/*") {
+        $assetUri = [Uri][string]$asset.browser_download_url
+        $isLocalTest = $assetUri.Scheme -eq "http" -and $assetUri.IsLoopback
+        if (-not ($isLocalTest -and $env:BAUDBOUND_ALLOW_INSECURE_TEST_URL -eq "1")) {
+            Stop-Installer "release asset URL is not trusted"
+        }
+    }
+    if ([string]$asset.digest -notmatch '^sha256:(?<digest>[A-Fa-f0-9]{64})$') {
+        Stop-Installer "Windows installer release digest is missing or invalid"
+    }
+
+    return [pscustomobject]@{
+        Version = $version
+        AssetName = [string]$asset.name
+        AssetUrl = [string]$asset.browser_download_url
+        Digest = $Matches.digest.ToLowerInvariant()
+    }
+}
+
+function Invoke-BaudBoundInstaller {
+    if (-not [Environment]::Is64BitOperatingSystem) {
+        Stop-Installer "only 64-bit Windows is currently supported"
+    }
+
+    Assert-SecureUrl -Value $ReleaseApiUrl
+
+    if (Get-Process -Name "baudbound" -ErrorAction SilentlyContinue) {
+        Stop-Installer "BaudBound is running. Quit it from the tray, then run this command again."
+    }
+
+    $release = Get-PublishedRelease
+    $installed = Get-InstalledBaudBound
+    if ($null -ne $installed -and [string]$installed.DisplayVersion -eq $release.Version) {
+        Write-Host "BaudBound $($release.Version) is already up to date."
+        return
+    }
+
+    $action = if ($null -eq $installed) { "Installing" } else { "Updating" }
+    Write-Host "$action BaudBound $($release.Version)..."
+
+    $temporaryDirectory = Join-Path ([IO.Path]::GetTempPath()) ("baudbound-install-" + [Guid]::NewGuid())
+    New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
+
+    try {
+        $installerPath = Join-Path $temporaryDirectory "BaudBound-setup.exe"
+        Invoke-WebRequest -Uri $release.AssetUrl -OutFile $installerPath
+
+        $actualChecksum = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualChecksum -ne $release.Digest) {
+            Stop-Installer "downloaded installer checksum does not match the GitHub release digest"
+        }
+
+        $process = Start-Process -FilePath $installerPath -Wait -PassThru
+        if ($process.ExitCode -ne 0) {
+            Stop-Installer "Windows installer exited with code $($process.ExitCode)"
+        }
+    } finally {
+        Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $result = Get-InstalledBaudBound
+    if ($null -ne $result) {
+        Write-Host "BaudBound $($result.DisplayVersion) is installed."
+    } else {
+        Write-Host "The installer completed successfully. Open BaudBound from the Start menu."
+    }
+}
+
+try {
+    Invoke-BaudBoundInstaller
+} catch {
+    Write-Error $_.Exception.Message
+    exit 1
+}
