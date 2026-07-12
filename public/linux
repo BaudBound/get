@@ -109,7 +109,7 @@ baudbound_is_running() {
 
     for environment_file in /proc/[0-9]*/environ; do
         [ -r "$environment_file" ] || continue
-        if cat "$environment_file" 2>/dev/null | tr '\000' '\n' \
+        if tr '\000' '\n' 2>/dev/null < "$environment_file" \
             | grep -Fqx "APPIMAGE=$install_path"; then
             return 0
         fi
