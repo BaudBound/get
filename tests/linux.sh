@@ -20,13 +20,14 @@ trap cleanup EXIT
 
 mkdir -p "$fixture_root"
 
-mkdir -p "$test_root/no-jq"
-if PATH="$test_root/no-jq" /bin/sh "$installer" >"$test_root/no-jq.out" 2>"$test_root/no-jq.err"; then
-    echo "installer continued without jq" >&2
+mkdir -p "$test_root/missing-dependencies"
+if PATH="$test_root/missing-dependencies" /bin/sh "$installer" >"$test_root/missing-dependencies.out" 2>"$test_root/missing-dependencies.err"; then
+    echo "installer continued without its required commands" >&2
     exit 1
 fi
-grep -Fq "jq is required" "$test_root/no-jq.err"
-grep -Fq "sudo apt install jq" "$test_root/no-jq.err"
+grep -Fq "required commands are missing: chmod cp curl grep jq ln mkdir mktemp mv rm sha256sum tr uname" "$test_root/missing-dependencies.err"
+grep -Fq "No files were downloaded or installed." "$test_root/missing-dependencies.err"
+grep -Fq "sudo apt install curl jq coreutils grep" "$test_root/missing-dependencies.err"
 
 cat > "$fixture_root/BaudBound-linux-x86_64.AppImage" <<'SCRIPT'
 #!/bin/sh
