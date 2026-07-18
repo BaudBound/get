@@ -31,6 +31,11 @@ grep -Fq "sudo apt install curl jq coreutils grep" "$test_root/missing-dependenc
 
 cat > "$fixture_root/BaudBound-linux-x86_64.AppImage" <<'SCRIPT'
 #!/bin/sh
+if [ "${1:-}" = "--appimage-extract" ]; then
+    mkdir -p squashfs-root
+    printf 'test icon\n' > squashfs-root/.DirIcon
+    exit 0
+fi
 printf 'baudbound 9.9.9-test\n'
 SCRIPT
 chmod 0755 "$fixture_root/BaudBound-linux-x86_64.AppImage"
@@ -75,20 +80,28 @@ export BAUDBOUND_ALLOW_INSECURE_TEST_URL=1
 export BAUDBOUND_RELEASE_API_URL="http://127.0.0.1:$port/release.json"
 export BAUDBOUND_INSTALL_DIR="$test_root/install"
 export BAUDBOUND_BIN_DIR="$test_root/bin"
+export XDG_DATA_HOME="$test_root/data"
 
-first_output="$(sh "$installer")"
+first_output="$(printf 'y\n' | script --quiet --return --command "cat '$installer' | sh" /dev/null)"
 grep -Fq "baudbound 9.9.9-test" <<< "$first_output"
+grep -Fq "Create a desktop application launcher? [Y/n]" <<< "$first_output"
 [[ -x "$BAUDBOUND_INSTALL_DIR/BaudBound.AppImage" ]]
 [[ -L "$BAUDBOUND_BIN_DIR/baudbound" ]]
 [[ "$("$BAUDBOUND_BIN_DIR/baudbound" --version)" == "baudbound 9.9.9-test" ]]
+[[ -f "$XDG_DATA_HOME/applications/app.baudbound.runner.desktop" ]]
+[[ -f "$XDG_DATA_HOME/icons/hicolor/128x128/apps/baudbound.png" ]]
+grep -Fq "Exec=\"$BAUDBOUND_INSTALL_DIR/BaudBound.AppImage\"" "$XDG_DATA_HOME/applications/app.baudbound.runner.desktop"
+grep -Fq "Terminal=false" "$XDG_DATA_HOME/applications/app.baudbound.runner.desktop"
+grep -Fq "test icon" "$XDG_DATA_HOME/icons/hicolor/128x128/apps/baudbound.png"
 
 first_checksum="$(sha256sum "$BAUDBOUND_INSTALL_DIR/BaudBound.AppImage")"
-second_output="$(sh "$installer")"
+second_output="$(setsid --wait sh "$installer" </dev/null)"
 grep -Fq "already up to date" <<< "$second_output"
+grep -Fq "Skipping the optional desktop launcher" <<< "$second_output"
 [[ "$(sha256sum "$BAUDBOUND_INSTALL_DIR/BaudBound.AppImage")" == "$first_checksum" ]]
 
 sed -i "s/sha256:$asset_digest/sha256:$(printf '%064d' 0)/" "$fixture_root/release.json"
-if sh "$installer" >"$test_root/corrupt.out" 2>"$test_root/corrupt.err"; then
+if setsid --wait sh "$installer" </dev/null >"$test_root/corrupt.out" 2>"$test_root/corrupt.err"; then
     echo "installer accepted a corrupt checksum" >&2
     exit 1
 fi
