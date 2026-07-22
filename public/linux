@@ -2,9 +2,9 @@
 
 set -eu
 
-readonly_default_release_api_url="https://api.github.com/repos/BaudBound/BaudBound/releases/latest"
+readonly_default_release_api_url="https://api.github.com/repos/BaudBound/baudbound/releases/latest"
 readonly_installation_guide_url="https://wiki.baudbound.app/en/runner/installation"
-readonly_latest_release_url="https://github.com/BaudBound/BaudBound/releases/latest"
+readonly_latest_release_url="https://github.com/BaudBound/baudbound/releases/latest"
 
 release_api_url="${BAUDBOUND_RELEASE_API_URL:-$readonly_default_release_api_url}"
 os_release_file="${BAUDBOUND_OS_RELEASE_FILE:-/etc/os-release}"
@@ -150,7 +150,7 @@ validate_release_url() {
 validate_asset_url() {
     asset_url_to_validate="$1"
     case "$asset_url_to_validate" in
-        https://github.com/BaudBound/BaudBound/releases/download/*) ;;
+        https://github.com/BaudBound/baudbound/releases/download/*) ;;
         http://127.0.0.1:*|http://localhost:*)
             [ "${BAUDBOUND_ALLOW_INSECURE_TEST_URL:-}" = "1" ] \
                 || fail "release asset URL is not trusted"

@@ -2,7 +2,7 @@
 
 This repository contains the static installer endpoints served at [get.baudbound.app](https://get.baudbound.app).
 
-The Linux and Windows scripts detect the local platform, download a published package from [BaudBound releases](https://github.com/BaudBound/BaudBound/releases), verify its checksum, and invoke the platform package installer.
+The Linux and Windows scripts detect the local platform, download a published package from [BaudBound releases](https://github.com/BaudBound/baudbound/releases), verify its checksum, and invoke the platform package installer.
 
 ## Test
 
