@@ -3,13 +3,18 @@
 set -eu
 
 readonly_default_release_api_url="https://api.github.com/repos/NATroutter/BaudBound/releases/latest"
+readonly_installation_guide_url="https://wiki.baudbound.app/en/runner/installation"
+readonly_latest_release_url="https://github.com/NATroutter/BaudBound/releases/latest"
+
 release_api_url="${BAUDBOUND_RELEASE_API_URL:-$readonly_default_release_api_url}"
-install_dir="${BAUDBOUND_INSTALL_DIR:-$HOME/.local/opt/baudbound}"
-bin_dir="${BAUDBOUND_BIN_DIR:-$HOME/.local/bin}"
-install_path="$install_dir/BaudBound.AppImage"
-command_path="$bin_dir/baudbound"
+os_release_file="${BAUDBOUND_OS_RELEASE_FILE:-/etc/os-release}"
 temporary_dir=""
-create_desktop_launcher=0
+package_format=""
+package_manager=""
+package_architecture=""
+package_suffix=""
+distribution_name=""
+readonly_package_name="baud-bound"
 
 fail() {
     printf 'BaudBound installer: %s\n' "$1" >&2
@@ -22,12 +27,17 @@ cleanup() {
     fi
 }
 
-check_dependencies() {
+append_missing_command() {
+    command_name="$1"
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        missing_commands="${missing_commands}${missing_commands:+ }${command_name}"
+    fi
+}
+
+check_common_dependencies() {
     missing_commands=""
-    for command_name in chmod cp curl grep jq ln mkdir mktemp mv rm sha256sum tr uname; do
-        if ! command -v "$command_name" >/dev/null 2>&1; then
-            missing_commands="${missing_commands}${missing_commands:+ }${command_name}"
-        fi
+    for command_name in curl id jq mktemp rm sha256sum tr uname; do
+        append_missing_command "$command_name"
     done
 
     [ -z "$missing_commands" ] && return
@@ -35,49 +45,95 @@ check_dependencies() {
     printf '%s\n' \
         "BaudBound installer: required commands are missing: $missing_commands" \
         "No files were downloaded or installed." \
-        "Install the required packages, then run the BaudBound installer again." \
-        "Debian or Ubuntu: sudo apt install curl jq coreutils grep" \
-        "Fedora: sudo dnf install curl jq coreutils grep" \
-        "Arch Linux: sudo pacman -S --needed curl jq coreutils grep" \
-        "Other distributions: install curl, jq, coreutils, and grep with the distribution package manager." >&2
+        "Install the missing commands, then run the BaudBound installer again." \
+        "Debian or Ubuntu: sudo apt install curl jq coreutils" \
+        "Fedora: sudo dnf install curl jq coreutils" >&2
     exit 1
 }
 
-validate_platform() {
+check_package_dependencies() {
+    missing_commands=""
+    case "$package_format" in
+        deb)
+            for command_name in apt dpkg dpkg-deb dpkg-query; do
+                append_missing_command "$command_name"
+            done
+            ;;
+        rpm)
+            for command_name in dnf rpm; do
+                append_missing_command "$command_name"
+            done
+            ;;
+        *) fail "internal package selection failed" ;;
+    esac
+
+    if [ "$(id -u)" -ne 0 ]; then
+        append_missing_command sudo
+    fi
+
+    [ -z "$missing_commands" ] && return
+
+    fail "required commands for $distribution_name are missing: $missing_commands. No files were downloaded or installed"
+}
+
+read_os_release_value() {
+    requested_key="$1"
+    while IFS='=' read -r key value; do
+        [ "$key" = "$requested_key" ] || continue
+        case "$value" in
+            \"*\") value="${value#\"}"; value="${value%\"}" ;;
+            \'*\') value="${value#\'}"; value="${value%\'}" ;;
+        esac
+        printf '%s' "$value"
+        return
+    done < "$os_release_file"
+}
+
+select_native_package() {
     [ "$(uname -s)" = "Linux" ] || fail "this installer supports Linux only"
 
     case "$(uname -m)" in
         x86_64|amd64) ;;
         *) fail "only 64-bit x86 Linux is currently supported" ;;
     esac
+
+    [ -r "$os_release_file" ] || fail "could not read $os_release_file to identify this Linux distribution"
+    distribution_id="$(read_os_release_value ID)"
+    distribution_name="$(read_os_release_value PRETTY_NAME)"
+    [ -n "$distribution_name" ] || distribution_name="$distribution_id"
+    distribution_id="$(printf '%s' "$distribution_id" | tr '[:upper:]' '[:lower:]')"
+    case "$distribution_id" in
+        ''|*[!a-z0-9._-]*) fail "the Linux distribution identifier in $os_release_file is invalid" ;;
+    esac
+
+    case "$distribution_id" in
+        debian|ubuntu)
+            package_format="deb"
+            package_manager="APT"
+            package_architecture="amd64"
+            package_suffix=".deb"
+            ;;
+        fedora)
+            package_format="rpm"
+            package_manager="DNF"
+            package_architecture="x86_64"
+            package_suffix=".rpm"
+            ;;
+        *)
+            printf '%s\n' \
+                "BaudBound installer: $distribution_name is not supported by the automatic installer." \
+                "No files were downloaded or installed." \
+                "Installation guide: $readonly_installation_guide_url" \
+                "GitHub Releases: $readonly_latest_release_url" >&2
+            exit 1
+            ;;
+    esac
 }
 
-ask_desktop_launcher() {
+require_interactive_terminal() {
     if ! (:) 2>/dev/null </dev/tty >/dev/tty; then
-        printf '%s\n' "No interactive terminal is available. Skipping the optional desktop launcher."
-        return
+        fail "an interactive terminal is required so $package_manager can request installation approval"
     fi
-
-    while true; do
-        printf 'Create a desktop application launcher? [Y/n] ' >/dev/tty
-        if ! IFS= read -r launcher_answer </dev/tty; then
-            printf '%s\n' "Could not read a response. Skipping the optional desktop launcher." >/dev/tty
-            return
-        fi
-
-        case "$launcher_answer" in
-            ""|y|Y|yes|YES|Yes)
-                create_desktop_launcher=1
-                return
-                ;;
-            n|N|no|NO|No)
-                return
-                ;;
-            *)
-                printf '%s\n' "Enter y for yes or n for no." >/dev/tty
-                ;;
-        esac
-    done
 }
 
 validate_release_url() {
@@ -92,8 +148,8 @@ validate_release_url() {
 }
 
 validate_asset_url() {
-    asset_url="$1"
-    case "$asset_url" in
+    asset_url_to_validate="$1"
+    case "$asset_url_to_validate" in
         https://github.com/NATroutter/BaudBound/releases/download/*) ;;
         http://127.0.0.1:*|http://localhost:*)
             [ "${BAUDBOUND_ALLOW_INSECURE_TEST_URL:-}" = "1" ] \
@@ -105,26 +161,37 @@ validate_asset_url() {
 
 read_release_asset() {
     release_file="$1"
-    asset_count="$(jq -er '[.assets[] | select(.name | endswith(".AppImage"))] | length' "$release_file")" \
-        || fail "GitHub release metadata is invalid"
+    release_version="$(jq -er '.tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")) | ltrimstr("v")' "$release_file")" \
+        || fail "GitHub release metadata has an invalid version"
+    asset_count="$(jq -er --arg suffix "$package_suffix" --arg architecture "$package_architecture" \
+        '[.assets[] | select(.name | endswith($suffix)) | select(.name | contains($architecture))] | length' \
+        "$release_file")" || fail "GitHub release metadata is invalid"
     [ "$asset_count" = "1" ] \
-        || fail "latest release must contain exactly one AppImage"
+        || fail "latest release must contain exactly one $package_format package for $package_architecture"
 
-    asset_name="$(jq -er '[.assets[] | select(.name | endswith(".AppImage"))][0].name' "$release_file")" \
-        || fail "AppImage name is missing from release metadata"
-    asset_url="$(jq -er '[.assets[] | select(.name | endswith(".AppImage"))][0].browser_download_url' "$release_file")" \
-        || fail "AppImage URL is missing from release metadata"
-    published_digest="$(jq -er '[.assets[] | select(.name | endswith(".AppImage"))][0].digest' "$release_file")" \
-        || fail "AppImage digest is missing from release metadata"
+    asset_name="$(jq -er --arg suffix "$package_suffix" --arg architecture "$package_architecture" \
+        '[.assets[] | select(.name | endswith($suffix)) | select(.name | contains($architecture))][0].name' \
+        "$release_file")" || fail "$package_format package name is missing from release metadata"
+    case "$asset_name" in
+        *[!A-Za-z0-9._+-]*) fail "$package_format package name contains unsafe characters" ;;
+    esac
+    case "$asset_name" in
+        *"$release_version"*) ;;
+        *) fail "$package_format package name does not contain release version $release_version" ;;
+    esac
+
+    asset_url="$(jq -er --arg name "$asset_name" '.assets[] | select(.name == $name) | .browser_download_url' "$release_file")" \
+        || fail "$package_format package URL is missing from release metadata"
+    published_digest="$(jq -er --arg name "$asset_name" '.assets[] | select(.name == $name) | .digest' "$release_file")" \
+        || fail "$package_format package digest is missing from release metadata"
 
     case "$published_digest" in
         sha256:*) expected_checksum="${published_digest#sha256:}" ;;
-        *) fail "AppImage release digest is not SHA256" ;;
+        *) fail "$package_format package release digest is not SHA256" ;;
     esac
-    [ "${#expected_checksum}" -eq 64 ] \
-        || fail "AppImage release digest is invalid"
+    [ "${#expected_checksum}" -eq 64 ] || fail "$package_format package release digest is invalid"
     case "$expected_checksum" in
-        *[!0-9a-fA-F]*) fail "AppImage release digest is invalid" ;;
+        *[!0-9a-fA-F]*) fail "$package_format package release digest is invalid" ;;
     esac
     expected_checksum="$(printf '%s' "$expected_checksum" | tr 'A-F' 'a-f')"
     validate_asset_url "$asset_url"
@@ -136,104 +203,137 @@ file_checksum() {
     printf '%s' "$checksum" | tr 'A-F' 'a-f'
 }
 
-baudbound_is_running() {
-    [ -d /proc ] || return 1
-
-    for environment_file in /proc/[0-9]*/environ; do
-        [ -r "$environment_file" ] || continue
-        if tr '\000' '\n' 2>/dev/null < "$environment_file" \
-            | grep -Fqx "APPIMAGE=$install_path"; then
-            return 0
-        fi
-    done
-
-    return 1
-}
-
-install_appimage() {
+validate_package_metadata() {
     downloaded_path="$1"
-    expected_checksum="$2"
+    case "$package_format" in
+        deb)
+            package_name="$(dpkg-deb --field "$downloaded_path" Package)" \
+                || fail "could not read Debian package name"
+            package_version="$(dpkg-deb --field "$downloaded_path" Version)" \
+                || fail "could not read Debian package version"
+            package_arch="$(dpkg-deb --field "$downloaded_path" Architecture)" \
+                || fail "could not read Debian package architecture"
+            ;;
+        rpm)
+            package_name="$(rpm -qp --queryformat '%{NAME}' "$downloaded_path")" \
+                || fail "could not read RPM package name"
+            package_version="$(rpm -qp --queryformat '%{VERSION}' "$downloaded_path")" \
+                || fail "could not read RPM package version"
+            package_arch="$(rpm -qp --queryformat '%{ARCH}' "$downloaded_path")" \
+                || fail "could not read RPM package architecture"
+            ;;
+    esac
 
-    if [ -f "$install_path" ]; then
-        current_checksum="$(file_checksum "$install_path")"
-        if [ "$current_checksum" = "$expected_checksum" ]; then
-            mkdir -p "$bin_dir"
-            ensure_command_link
-            printf 'BaudBound is already up to date.\n'
-            return
-        fi
-    fi
-
-    baudbound_is_running \
-        && fail "BaudBound is running. Quit the desktop app or stop the service, then run this command again."
-
-    mkdir -p "$install_dir" "$bin_dir"
-    staged_path="$(mktemp "$install_dir/.BaudBound.AppImage.XXXXXX")"
-    cp "$downloaded_path" "$staged_path"
-    chmod 0755 "$staged_path"
-
-    staged_checksum="$(file_checksum "$staged_path")"
-    if [ "$staged_checksum" != "$expected_checksum" ]; then
-        rm -f "$staged_path"
-        fail "staged AppImage checksum does not match the published checksum"
-    fi
-
-    mv -f "$staged_path" "$install_path"
-    ensure_command_link
+    [ "$package_name" = "$readonly_package_name" ] \
+        || fail "package name must be $readonly_package_name, found $package_name"
+    [ "$package_version" = "$release_version" ] \
+        || fail "package version $package_version does not match release $release_version"
+    [ "$package_arch" = "$package_architecture" ] \
+        || fail "package architecture $package_arch does not match $package_architecture"
 }
 
-ensure_command_link() {
-    if [ -e "$command_path" ] && [ ! -L "$command_path" ]; then
-        fail "$command_path exists and is not a symbolic link"
-    fi
-    ln -sfn "$install_path" "$command_path"
+installed_version() {
+    case "$package_format" in
+        deb) dpkg-query --show --showformat='${Version}' "$readonly_package_name" 2>/dev/null || true ;;
+        rpm) rpm -q --queryformat '%{VERSION}' "$readonly_package_name" 2>/dev/null || true ;;
+    esac
 }
 
-install_desktop_launcher() {
-    data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
-    applications_dir="$data_home/applications"
-    icons_dir="$data_home/icons/hicolor/128x128/apps"
-    launcher_path="$applications_dir/app.baudbound.runner.desktop"
-    icon_path="$icons_dir/baudbound.png"
-    extraction_dir="$temporary_dir/desktop-assets"
+compare_versions() {
+    current="$1"
+    available="$2"
+    case "$package_format" in
+        deb)
+            if dpkg --compare-versions "$current" eq "$available"; then
+                printf 'equal'
+            elif dpkg --compare-versions "$current" lt "$available"; then
+                printf 'older'
+            else
+                printf 'newer'
+            fi
+            ;;
+        rpm)
+            comparison="$(
+                BAUDBOUND_CURRENT_VERSION="$current" \
+                    BAUDBOUND_AVAILABLE_VERSION="$available" \
+                    rpm --eval \
+                    '%{lua:print(rpm.vercmp(os.getenv("BAUDBOUND_CURRENT_VERSION"), os.getenv("BAUDBOUND_AVAILABLE_VERSION")))}'
+            )" || fail "could not compare installed and available RPM versions"
+            case "$comparison" in
+                -1) printf 'older' ;;
+                0) printf 'equal' ;;
+                1) printf 'newer' ;;
+                *) fail "RPM returned an invalid version comparison result" ;;
+            esac
+            ;;
+    esac
+}
 
-    mkdir -p "$applications_dir" "$icons_dir" "$extraction_dir"
-    (
-        cd "$extraction_dir"
-        "$install_path" --appimage-extract >/dev/null
-    ) || fail "could not extract the desktop icon from the AppImage"
+check_appimage_conflict() {
+    current_version="$(installed_version)"
+    [ -n "$current_version" ] && return
 
-    bundled_icon="$extraction_dir/squashfs-root/.DirIcon"
-    [ -e "$bundled_icon" ] \
-        || fail "the AppImage does not contain its desktop icon"
-    cp -L "$bundled_icon" "$icon_path"
-    chmod 0644 "$icon_path"
+    appimage_path="${BAUDBOUND_APPIMAGE_PATH:-$HOME/.local/opt/baudbound/BaudBound.AppImage}"
+    command_path="${BAUDBOUND_APPIMAGE_COMMAND_PATH:-$HOME/.local/bin/baudbound}"
+    launcher_path="${BAUDBOUND_APPIMAGE_LAUNCHER_PATH:-$HOME/.local/share/applications/baudbound.desktop}"
+    identifier_launcher_path="${BAUDBOUND_APPIMAGE_IDENTIFIER_LAUNCHER_PATH:-$HOME/.local/share/applications/app.baudbound.runner.desktop}"
+    if [ -e "$appimage_path" ] || [ -L "$command_path" ] || [ -e "$launcher_path" ] || [ -e "$identifier_launcher_path" ]; then
+        printf '%s\n' \
+            "BaudBound installer: an existing AppImage installation was found." \
+            "No files were downloaded or installed." \
+            "Remove the old AppImage launcher and command only after confirming that you want to switch installation types." \
+            "Migration instructions: $readonly_installation_guide_url" >&2
+        exit 1
+    fi
+}
 
-    printf '%s\n' \
-        "[Desktop Entry]" \
-        "Version=1.0" \
-        "Type=Application" \
-        "Name=BaudBound" \
-        "Comment=Visual automation runner" \
-        "Exec=\"$install_path\"" \
-        "Icon=baudbound" \
-        "Terminal=false" \
-        "Categories=Utility;" \
-        "StartupNotify=true" > "$launcher_path"
-    chmod 0644 "$launcher_path"
+run_as_administrator() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@" </dev/tty
+    else
+        # The installer arrives on stdin, so package manager prompts must read from the terminal.
+        # shellcheck disable=SC2024
+        sudo "$@" </dev/tty
+    fi
+}
 
-    if command -v update-desktop-database >/dev/null 2>&1; then
-        update-desktop-database "$applications_dir" >/dev/null 2>&1 || true
+install_native_package() {
+    downloaded_path="$1"
+    current_version="$(installed_version)"
+    if [ -n "$current_version" ]; then
+        version_relation="$(compare_versions "$current_version" "$release_version")"
+        case "$version_relation" in
+            equal)
+                printf 'BaudBound %s is already installed and up to date.\n' "$release_version"
+                return
+                ;;
+            newer)
+                fail "installed BaudBound $current_version is newer than release $release_version. Downgrades are not supported"
+                ;;
+            older)
+                printf 'Updating BaudBound from %s to %s with %s.\n' "$current_version" "$release_version" "$package_manager"
+                ;;
+        esac
+    else
+        printf 'Installing BaudBound %s with %s.\n' "$release_version" "$package_manager"
     fi
 
-    printf 'Desktop application launcher created at %s\n' "$launcher_path"
+    case "$package_format" in
+        deb) run_as_administrator apt install "$downloaded_path" ;;
+        rpm) run_as_administrator dnf install "$downloaded_path" ;;
+    esac
 }
 
 main() {
-    check_dependencies
-    validate_platform
+    check_common_dependencies
+    select_native_package
+    check_package_dependencies
+    require_interactive_terminal
     validate_release_url
-    ask_desktop_launcher
+    check_appimage_conflict
+
+    printf 'Detected %s on 64-bit x86 Linux.\n' "$distribution_name"
+    printf 'BaudBound will use the %s package and %s.\n' "$package_format" "$package_manager"
 
     temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/baudbound-install.XXXXXX")"
     trap cleanup EXIT HUP INT TERM
@@ -245,33 +345,17 @@ main() {
         --output "$release_path" "$release_api_url"
     read_release_asset "$release_path"
 
-    downloaded_path="$temporary_dir/BaudBound.AppImage"
+    downloaded_path="$temporary_dir/$asset_name"
     printf 'Downloading %s...\n' "$asset_name"
-    curl --fail --location --silent --show-error \
-        --output "$downloaded_path" "$asset_url"
+    curl --fail --location --silent --show-error --output "$downloaded_path" "$asset_url"
 
     actual_checksum="$(file_checksum "$downloaded_path")"
     [ "$actual_checksum" = "$expected_checksum" ] \
-        || fail "downloaded AppImage checksum does not match the published checksum"
+        || fail "downloaded $package_format package checksum does not match the published checksum"
 
-    install_appimage "$downloaded_path" "$expected_checksum"
-
-    if [ "$create_desktop_launcher" = "1" ]; then
-        install_desktop_launcher
-    fi
-
-    if version_output="$("$install_path" --version 2>&1)"; then
-        printf '%s\n' "$version_output"
-    else
-        fail "BaudBound was installed, but it could not start. Check the Linux prerequisites in the installation guide."
-    fi
-
-    case ":${PATH:-}:" in
-        *":$bin_dir:"*) ;;
-        *) printf 'Add %s to PATH to use the baudbound command.\n' "$bin_dir" ;;
-    esac
-
-    printf 'Installed at %s\n' "$install_path"
+    validate_package_metadata "$downloaded_path"
+    install_native_package "$downloaded_path"
+    printf 'BaudBound %s is installed. Open it from the application menu or run baudbound.\n' "$release_version"
 }
 
 main "$@"
