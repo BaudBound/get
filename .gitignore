@@ -1,0 +1,37 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node/Vite
+node_modules/
+.pnpm-store/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+/plan/
+/examples/
+
+# BaudBound local runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.bbs.tmp
+

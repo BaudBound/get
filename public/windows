@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-$DefaultReleaseApiUrl = "https://api.github.com/repos/NATroutter/BaudBound/releases/latest"
+$DefaultReleaseApiUrl = "https://api.github.com/repos/BaudBound/BaudBound/releases/latest"
 $ReleaseApiUrl = if ($env:BAUDBOUND_RELEASE_API_URL) {
     $env:BAUDBOUND_RELEASE_API_URL
 } else {
@@ -75,7 +75,7 @@ function Get-PublishedRelease {
         Stop-Installer "latest release must contain exactly one 64-bit Windows setup executable"
     }
     $asset = $assets[0]
-    if ([string]$asset.browser_download_url -notlike "https://github.com/NATroutter/BaudBound/releases/download/*") {
+    if ([string]$asset.browser_download_url -notlike "https://github.com/BaudBound/BaudBound/releases/download/*") {
         $assetUri = [Uri][string]$asset.browser_download_url
         $isLocalTest = $assetUri.Scheme -eq "http" -and $assetUri.IsLoopback
         if (-not ($isLocalTest -and $env:BAUDBOUND_ALLOW_INSECURE_TEST_URL -eq "1")) {

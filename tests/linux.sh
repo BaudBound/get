@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-installer="$repository_root/deploy/get/public/linux"
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+installer="$repository_root/public/linux"
 test_root="$(mktemp -d)"
 fixture_root="$test_root/fixture"
 fake_bin="$test_root/bin"

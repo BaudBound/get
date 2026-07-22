@@ -1,6 +1,6 @@
 services:
   get:
-    image: ghcr.io/natroutter/baudbound-get:latest
+    image: ghcr.io/baudbound/get:latest
     container_name: baudbound-get
     restart: unless-stopped
     read_only: true

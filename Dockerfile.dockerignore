@@ -1,3 +1,5 @@
 *
-!deploy/get/
-!deploy/get/**
+!Dockerfile
+!nginx.conf
+!public/
+!public/**

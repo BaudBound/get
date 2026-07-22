@@ -1,8 +1,8 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "../../..")).Path
-$InstallerSource = Join-Path $RepositoryRoot "deploy/get/public/windows"
+$RepositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$InstallerSource = Join-Path $RepositoryRoot "public/windows"
 $TestRoot = Join-Path ([IO.Path]::GetTempPath()) ("baudbound-windows-installer-test-" + [Guid]::NewGuid())
 $FixtureRoot = Join-Path $TestRoot "fixture"
 $RegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\BaudBoundInstallerTest"
@@ -36,7 +36,7 @@ try {
 
     $Port = Get-AvailablePort
     Write-Host "Starting fixture server on port $Port..."
-    $ServerScript = Join-Path $RepositoryRoot "deploy/get/tests/http-server.ps1"
+    $ServerScript = Join-Path $RepositoryRoot "tests/http-server.ps1"
     $Server = Start-Process -FilePath $PowerShellExecutable -ArgumentList @(
         "-NoProfile", "-File", $ServerScript, "-Port", $Port, "-Root", $FixtureRoot
     ) -WindowStyle Hidden -PassThru

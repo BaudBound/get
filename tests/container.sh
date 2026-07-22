@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 image="baudbound-get:test"
 container="baudbound-get-test-$RANDOM"
 port="18086"
@@ -20,7 +20,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-docker build --file "$repository_root/deploy/get/Dockerfile" --tag "$image" "$repository_root"
+docker build --file "$repository_root/Dockerfile" --tag "$image" "$repository_root"
 docker run --detach \
     --name "$container" \
     --read-only \
@@ -39,9 +39,9 @@ done
 
 curl --fail --silent "http://127.0.0.1:$port/healthz" | grep -Fxq "ok"
 curl --fail --silent "http://127.0.0.1:$port/linux" \
-    | cmp --silent - "$repository_root/deploy/get/public/linux"
+    | cmp --silent - "$repository_root/public/linux"
 curl --fail --silent "http://127.0.0.1:$port/windows" \
-    | cmp --silent - "$repository_root/deploy/get/public/windows"
+    | cmp --silent - "$repository_root/public/windows"
 
 cache_control="$(
     curl --silent --output /dev/null --write-out '%header{cache-control}' \
