@@ -14,7 +14,7 @@ package_manager=""
 package_architecture=""
 package_suffix=""
 distribution_name=""
-readonly_package_name="baud-bound"
+readonly_package_name="baudbound"
 
 fail() {
     printf 'BaudBound installer: %s\n' "$1" >&2

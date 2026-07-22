@@ -29,10 +29,10 @@ fi
 grep -Fq "required commands are missing" "$test_root/missing.err"
 grep -Fq "No files were downloaded or installed." "$test_root/missing.err"
 
-printf 'test deb package\n' > "$fixture_root/BaudBound_9.9.9_amd64.deb"
-printf 'test rpm package\n' > "$fixture_root/BaudBound-9.9.9-1.x86_64.rpm"
-deb_digest="$(sha256sum "$fixture_root/BaudBound_9.9.9_amd64.deb" | cut -d ' ' -f 1)"
-rpm_digest="$(sha256sum "$fixture_root/BaudBound-9.9.9-1.x86_64.rpm" | cut -d ' ' -f 1)"
+printf 'test deb package\n' > "$fixture_root/Baudbound_9.9.9_amd64.deb"
+printf 'test rpm package\n' > "$fixture_root/Baudbound-9.9.9-1.x86_64.rpm"
+deb_digest="$(sha256sum "$fixture_root/Baudbound_9.9.9_amd64.deb" | cut -d ' ' -f 1)"
+rpm_digest="$(sha256sum "$fixture_root/Baudbound-9.9.9-1.x86_64.rpm" | cut -d ' ' -f 1)"
 
 python3 - "$fixture_root" "$port_file" <<'PY' &
 import http.server
@@ -62,13 +62,13 @@ cat > "$fixture_root/release.json" <<JSON
   "tag_name": "v9.9.9",
   "assets": [
     {
-      "name": "BaudBound_9.9.9_amd64.deb",
-      "browser_download_url": "http://127.0.0.1:$port/BaudBound_9.9.9_amd64.deb",
+      "name": "Baudbound_9.9.9_amd64.deb",
+      "browser_download_url": "http://127.0.0.1:$port/Baudbound_9.9.9_amd64.deb",
       "digest": "sha256:$deb_digest"
     },
     {
-      "name": "BaudBound-9.9.9-1.x86_64.rpm",
-      "browser_download_url": "http://127.0.0.1:$port/BaudBound-9.9.9-1.x86_64.rpm",
+      "name": "Baudbound-9.9.9-1.x86_64.rpm",
+      "browser_download_url": "http://127.0.0.1:$port/Baudbound-9.9.9-1.x86_64.rpm",
       "digest": "sha256:$rpm_digest"
     }
   ]
@@ -121,7 +121,7 @@ SH
 cat > "$fake_bin/dpkg-deb" <<'SH'
 #!/bin/sh
 case "$3" in
-    Package) printf 'baud-bound\n' ;;
+    Package) printf 'baudbound\n' ;;
     Version) printf '9.9.9\n' ;;
     Architecture) printf 'amd64\n' ;;
     *) exit 1 ;;
@@ -139,7 +139,7 @@ if [ "${1:-}" = "--eval" ]; then
     exit 0
 fi
 case "${3:-}" in
-    '%{NAME}') [ "${1:-}" = "-qp" ] && printf 'baud-bound' || exit 1 ;;
+    '%{NAME}') [ "${1:-}" = "-qp" ] && printf 'baudbound' || exit 1 ;;
     '%{VERSION}')
         if [ "${1:-}" = "-qp" ]; then
             printf '9.9.9'
@@ -183,7 +183,7 @@ debian_output="$(run_installer)"
 grep -Fq "Detected Debian GNU/Linux 13" <<< "$debian_output"
 grep -Fq "use the deb package and APT" <<< "$debian_output"
 grep -Fq "BaudBound 9.9.9 is installed" <<< "$debian_output"
-grep -Eq '^install .*/BaudBound_9\.9\.9_amd64\.deb$' "$BAUDBOUND_TEST_COMMAND_FILE"
+grep -Eq '^install .*/Baudbound_9\.9\.9_amd64\.deb$' "$BAUDBOUND_TEST_COMMAND_FILE"
 
 rm -f "$BAUDBOUND_TEST_COMMAND_FILE"
 export BAUDBOUND_TEST_INSTALLED_VERSION=9.9.9
@@ -230,7 +230,7 @@ export BAUDBOUND_TEST_COMMAND_FILE="$test_root/ubuntu-command"
 ubuntu_output="$(run_installer)"
 grep -Fq "Detected Ubuntu" <<< "$ubuntu_output"
 grep -Fq "use the deb package and APT" <<< "$ubuntu_output"
-grep -Eq '^install .*/BaudBound_9\.9\.9_amd64\.deb$' "$BAUDBOUND_TEST_COMMAND_FILE"
+grep -Eq '^install .*/Baudbound_9\.9\.9_amd64\.deb$' "$BAUDBOUND_TEST_COMMAND_FILE"
 
 cat > "$test_root/fedora-os-release" <<'EOF'
 ID=fedora
@@ -241,7 +241,7 @@ export BAUDBOUND_TEST_COMMAND_FILE="$test_root/fedora-command"
 fedora_output="$(run_installer)"
 grep -Fq "Detected Fedora Linux" <<< "$fedora_output"
 grep -Fq "use the rpm package and DNF" <<< "$fedora_output"
-grep -Eq '^install .*/BaudBound-9\.9\.9-1\.x86_64\.rpm$' "$BAUDBOUND_TEST_COMMAND_FILE"
+grep -Eq '^install .*/Baudbound-9\.9\.9-1\.x86_64\.rpm$' "$BAUDBOUND_TEST_COMMAND_FILE"
 
 rm -f "$BAUDBOUND_TEST_COMMAND_FILE"
 export BAUDBOUND_TEST_INSTALLED_VERSION=9.9.9
