@@ -17,6 +17,23 @@ function Stop-Installer {
     throw "BaudBound installer: $Message"
 }
 
+function ConvertTo-BaudBoundVersion {
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    if ($Value -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+        Stop-Installer "$Label version '$Value' is not valid semantic version metadata"
+    }
+
+    try {
+        return [Version]::Parse($Value)
+    } catch {
+        Stop-Installer "$Label version '$Value' is outside the supported numeric range"
+    }
+}
+
 function Assert-SecureUrl {
     param([Parameter(Mandatory)][string]$Value)
 
@@ -107,9 +124,18 @@ function Invoke-BaudBoundInstaller {
 
     $release = Get-PublishedRelease
     $installed = Get-InstalledBaudBound
-    if ($null -ne $installed -and [string]$installed.DisplayVersion -eq $release.Version) {
-        Write-Host "BaudBound $($release.Version) is already up to date."
-        return
+    if ($null -ne $installed) {
+        $installedVersionText = [string]$installed.DisplayVersion
+        $installedVersion = ConvertTo-BaudBoundVersion -Value $installedVersionText -Label "installed BaudBound"
+        $releaseVersion = ConvertTo-BaudBoundVersion -Value $release.Version -Label "release"
+        $comparison = $installedVersion.CompareTo($releaseVersion)
+        if ($comparison -eq 0) {
+            Write-Host "BaudBound $($release.Version) is already up to date."
+            return
+        }
+        if ($comparison -gt 0) {
+            Stop-Installer "installed BaudBound $installedVersionText is newer than release $($release.Version). Downgrades are not supported"
+        }
     }
 
     $action = if ($null -eq $installed) { "Installing" } else { "Updating" }
@@ -146,6 +172,6 @@ function Invoke-BaudBoundInstaller {
 try {
     Invoke-BaudBoundInstaller
 } catch {
-    Write-Error $_.Exception.Message
+    [Console]::Error.WriteLine($_.Exception.Message)
     exit 1
 }

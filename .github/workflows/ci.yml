@@ -11,14 +11,13 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   test-linux:
     name: Test Linux installer and container
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install test dependencies
         run: sudo apt-get update && sudo apt-get install --yes jq shellcheck
       - name: Check shell scripts
@@ -32,7 +31,7 @@ jobs:
     name: Test Windows installer
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Check PowerShell syntax
         shell: pwsh
         run: |
@@ -61,19 +60,22 @@ jobs:
       - test-linux
       - test-windows
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/baudbound/get
           tags: |
@@ -83,7 +85,7 @@ jobs:
             type=sha,prefix=sha-
             type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
       - name: Build Docker image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: Dockerfile

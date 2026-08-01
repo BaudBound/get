@@ -87,6 +87,34 @@ try {
         throw "Windows installer did not skip the current version"
     }
 
+    Write-Host "Testing downgrade rejection..."
+    Set-ItemProperty -Path $RegistryPath -Name DisplayVersion -Value "10.0.0"
+    $DowngradeErrorPath = Join-Path $TestRoot "downgrade.err"
+    $DowngradeProcess = Start-Process -FilePath $PowerShellExecutable -ArgumentList @(
+        "-NoProfile", "-File", $Installer
+    ) -RedirectStandardError $DowngradeErrorPath -Wait -PassThru
+    if ($DowngradeProcess.ExitCode -eq 0) {
+        throw "Windows installer accepted a package downgrade"
+    }
+    $DowngradeError = Get-Content -Raw $DowngradeErrorPath
+    $NormalizedDowngradeError = ($DowngradeError -replace '\x1B\[[0-?]*[ -/]*[@-~]', '') -replace '\s+', ' '
+    if ($NormalizedDowngradeError -notmatch "installed BaudBound 10.0.0.*release 9.9.9.*Downgrades are not supported") {
+        throw "Windows installer did not report the rejected downgrade"
+    }
+
+    Write-Host "Testing malformed installed-version rejection..."
+    Set-ItemProperty -Path $RegistryPath -Name DisplayVersion -Value "unknown"
+    $MalformedVersionErrorPath = Join-Path $TestRoot "malformed-version.err"
+    $MalformedVersionProcess = Start-Process -FilePath $PowerShellExecutable -ArgumentList @(
+        "-NoProfile", "-File", $Installer
+    ) -RedirectStandardError $MalformedVersionErrorPath -Wait -PassThru
+    if ($MalformedVersionProcess.ExitCode -eq 0) {
+        throw "Windows installer accepted malformed installed-version metadata"
+    }
+    if ((Get-Content -Raw $MalformedVersionErrorPath) -notmatch "is not valid semantic version metadata") {
+        throw "Windows installer did not report malformed installed-version metadata"
+    }
+
     Write-Host "Testing corrupt-digest rejection..."
     Copy-Item -LiteralPath "$env:SystemRoot\System32\hostname.exe" -Destination $AssetPath
     $ReleaseObject = $Release | ConvertFrom-Json
