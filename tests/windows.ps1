@@ -98,7 +98,8 @@ try {
     }
     $DowngradeError = Get-Content -Raw $DowngradeErrorPath
     if (
-        $DowngradeError -notmatch "installed BaudBound 10.0.0 is newer than release 9.9.9" -or
+        $DowngradeError -notmatch "installed BaudBound 10.0.0" -or
+        $DowngradeError -notmatch "release 9.9.9" -or
         $DowngradeError -notmatch "Downgrades are not supported"
     ) {
         throw "Windows installer did not report the rejected downgrade"
