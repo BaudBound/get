@@ -97,11 +97,8 @@ try {
         throw "Windows installer accepted a package downgrade"
     }
     $DowngradeError = Get-Content -Raw $DowngradeErrorPath
-    if (
-        $DowngradeError -notmatch "installed BaudBound 10.0.0" -or
-        $DowngradeError -notmatch "release 9.9.9" -or
-        $DowngradeError -notmatch "Downgrades are not supported"
-    ) {
+    $NormalizedDowngradeError = ($DowngradeError -replace '\x1B\[[0-?]*[ -/]*[@-~]', '') -replace '\s+', ' '
+    if ($NormalizedDowngradeError -notmatch "installed BaudBound 10.0.0.*release 9.9.9.*Downgrades are not supported") {
         throw "Windows installer did not report the rejected downgrade"
     }
 
