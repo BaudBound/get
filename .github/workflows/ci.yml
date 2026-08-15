@@ -25,38 +25,35 @@ jobs:
       - name: Install test dependencies
         run: sudo apt-get update && sudo apt-get install --yes jq shellcheck
       - name: Check shell scripts
-        run: shellcheck public/linux tests/linux.sh tests/container.sh
-      - name: Test Linux installer
-        run: bash tests/linux.sh
-      - name: Test container endpoints
-        run: bash tests/container.sh
+        run: shellcheck public/linux
+      - name: Test Linux installer and container
+        run: node --test tests/linux.test.mjs tests/container.test.mjs
 
   test-windows:
     name: Test Windows installer
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
       - name: Check PowerShell syntax
         shell: pwsh
         run: |
-          $allErrors = @()
-          foreach ($script in @("public/windows", "tests/windows.ps1", "tests/http-server.ps1")) {
-            $tokens = $null
-            $fileErrors = $null
-            [void][System.Management.Automation.Language.Parser]::ParseFile(
-              (Resolve-Path $script),
-              [ref]$tokens,
-              [ref]$fileErrors
-            )
-            $allErrors += $fileErrors
-          }
-          if ($allErrors.Count -gt 0) {
-            $allErrors | Format-List | Out-String | Write-Error
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path "public/windows"),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
             exit 1
           }
       - name: Test Windows installer
-        shell: pwsh
-        run: ./tests/windows.ps1
+        run: node --test tests/windows.test.mjs
 
   build:
     name: Build installer image
