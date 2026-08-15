@@ -2,7 +2,82 @@
 
 set -eu
 
-printf '%s\n' \
-    "BaudBound installer: downloads are paused until the first public app release." \
-    "Follow development on GitHub: https://github.com/BaudBound/baudbound" >&2
-exit 1
+# Flip to 1 at the first public app release. The contract tests rewrite this
+# exact line to exercise the rest of the script, so keep it on its own line and
+# keep the spelling unchanged.
+downloads_enabled=0
+
+fail() {
+    printf 'BaudBound installer: %s\n' "$1" >&2
+    exit 1
+}
+
+if [ "$downloads_enabled" -eq 0 ]; then
+    printf '%s\n' \
+        "BaudBound installer: downloads are paused until the first public app release." \
+        "Follow development on GitHub: https://github.com/BaudBound/baudbound" >&2
+    exit 1
+fi
+
+# BAUDBOUND_TEST_* variables exist for the contract tests, which cannot supply a
+# real machine or distribution. They only substitute detection inputs; every
+# check below still runs.
+machine="${BAUDBOUND_TEST_UNAME_M:-$(uname -m)}"
+case "$machine" in
+    x86_64) debian_arch="amd64"; rpm_arch="x86_64" ;;
+    aarch64 | arm64) debian_arch="arm64"; rpm_arch="aarch64" ;;
+    *)
+        fail "unsupported CPU architecture ${machine}. BaudBound supports x86_64 and aarch64 Linux."
+        ;;
+esac
+
+if [ -n "${BAUDBOUND_TEST_OS_ID:-}" ]; then
+    os_id="$BAUDBOUND_TEST_OS_ID"
+else
+    [ -r /etc/os-release ] || fail "cannot read /etc/os-release to identify this system."
+    # Read the value rather than sourcing the file. Sourcing executes whatever
+    # the file contains, and this script goes on to invoke a package manager
+    # with elevated rights, so the identifier is extracted textually and
+    # stripped of the optional quoting the format allows.
+    os_id="$(
+        awk -F= '$1 == "ID" {
+            value = $2
+            gsub(/^["'"'"']|["'"'"']$/, "", value)
+            print value
+            exit
+        }' /etc/os-release
+    )"
+fi
+
+case "$os_id" in
+    *[!a-z0-9._-]* | "")
+        fail "could not identify this system from /etc/os-release."
+        ;;
+esac
+
+# 64-bit Raspberry Pi OS reports ID=debian and is served by the Debian branch.
+# The raspbian identifier belongs to the 32-bit image, which the architecture
+# check above has already refused.
+case "$os_id" in
+    debian | ubuntu | raspbian)
+        package_suffix="_${debian_arch}.deb"
+        package_manager="apt-get"
+        ;;
+    fedora)
+        package_suffix=".${rpm_arch}.rpm"
+        package_manager="dnf"
+        ;;
+    *)
+        fail "no tested native package for ${os_id}. See https://wiki.baudbound.app/runner/installation"
+        ;;
+esac
+
+if [ -n "${BAUDBOUND_TEST_PLAN_ONLY:-}" ]; then
+    printf 'Would install a package ending in %s using %s.\n' "$package_suffix" "$package_manager"
+    exit 0
+fi
+
+command -v "$package_manager" >/dev/null 2>&1 \
+    || fail "required package manager ${package_manager} is not available."
+
+fail "package download is not implemented until the first public app release."
