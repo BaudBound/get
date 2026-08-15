@@ -120,7 +120,9 @@ function run(file, args, { env, stdin = "ignore" }) {
  *   would fail to launch rather than testing the installer.
  */
 export function runLinuxInstaller(installer, { env = {}, mode = "terminal" } = {}) {
-	if (mode === "direct") return run("sh", [installer], { env });
+	// Absolute, because "direct" exists for cases that empty PATH and a bare
+	// name would be resolved through the very PATH under test.
+	if (mode === "direct") return run("/bin/sh", [installer], { env });
 	if (mode === "no-terminal") return run("setsid", ["-w", "sh", installer], { env });
 	return run("script", ["--quiet", "--return", "--command", `sh '${installer}'`, "/dev/null"], { env });
 }
