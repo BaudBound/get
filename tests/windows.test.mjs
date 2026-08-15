@@ -11,6 +11,7 @@ import {
 	enableDownloads,
 	installerSource,
 	pauseSeamLiteral,
+	powerShellExecutable,
 	runWindowsInstaller,
 } from "./lib/installer.mjs";
 
@@ -43,7 +44,7 @@ function powershell(script) {
 	// every script ends with an explicit one. Without it a swallowed error, or
 	// even a cmdlet that merely wrote to the error stream, exits non-zero.
 	const result = spawnSync(
-		"powershell.exe",
+		powerShellExecutable,
 		["-NoProfile", "-NonInteractive", "-Command", `${script}; exit 0`],
 		{ encoding: "utf8" },
 	);

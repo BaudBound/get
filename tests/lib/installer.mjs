@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -110,17 +110,42 @@ function run(file, args, { env, stdin = "ignore" }) {
  * approval. `script` is the portable way to allocate a terminal for a child
  * without adding a native dependency to this suite.
  */
-export function runLinuxInstaller(installer, { env = {}, tty = true } = {}) {
-	return tty
-		? run("script", ["--quiet", "--return", "--command", `sh '${installer}'`, "/dev/null"], { env })
-		: run("setsid", ["-w", "sh", installer], { env });
+/**
+ * @param mode
+ *   "terminal" runs under a pseudo-terminal, which the installer requires
+ *   because APT and DNF prompt for approval.
+ *   "no-terminal" withholds one, to prove the installer refuses.
+ *   "direct" runs it with neither wrapper, for cases that alter PATH: the
+ *   wrappers are themselves resolved through PATH, so a test that empties it
+ *   would fail to launch rather than testing the installer.
+ */
+export function runLinuxInstaller(installer, { env = {}, mode = "terminal" } = {}) {
+	if (mode === "direct") return run("sh", [installer], { env });
+	if (mode === "no-terminal") return run("setsid", ["-w", "sh", installer], { env });
+	return run("script", ["--quiet", "--return", "--command", `sh '${installer}'`, "/dev/null"], { env });
 }
+
+/**
+ * PowerShell 7 where it exists, Windows PowerShell otherwise. The two differ in
+ * which cmdlets they carry, and the installer uses some that the oldest
+ * Windows PowerShell does not have, so the newer one is preferred rather than
+ * assumed absent.
+ */
+export const powerShellExecutable = (() => {
+	const candidates = process.platform === "win32" ? ["pwsh.exe", "powershell.exe"] : ["pwsh"];
+	return (
+		candidates.find((candidate) => {
+			const probe = spawnSync(candidate, ["-NoProfile", "-Command", "exit 0"], { stdio: "ignore" });
+			return probe.error === undefined && probe.status === 0;
+		}) ?? candidates.at(-1)
+	);
+})();
 
 export function runWindowsInstaller(installer, { env = {} } = {}) {
 	// -NonInteractive with a closed stdin means a prompt fails the test rather
 	// than waiting on input that never arrives.
 	return run(
-		"powershell.exe",
+		powerShellExecutable,
 		["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", installer],
 		{ env },
 	);

@@ -194,7 +194,10 @@ describe("dependencies", { skip: !isLinuxHost }, () => {
 	test("stops when a required command is missing", async () => {
 		const empty = join(root, "empty-path");
 		mkdirSync(empty, { recursive: true });
-		const result = await run({ PATH: empty }, { tty: false });
+		// Run directly: the terminal wrappers are themselves found through PATH,
+		// so wrapping this case would fail to launch rather than test anything.
+		// The dependency check runs before the terminal check, so none is needed.
+		const result = await run({ PATH: empty }, { mode: "direct" });
 
 		assert.notEqual(result.status, 0);
 		assert.match(result.output, /required commands are missing/);
@@ -419,7 +422,7 @@ describe("terminal requirement", { skip: !canDropTerminal }, () => {
 				BAUDBOUND_OS_RELEASE_FILE: osRelease("debian"),
 				BAUDBOUND_TEST_COMMAND_FILE: commandFile("unused"),
 			},
-			{ tty: false },
+			{ mode: "no-terminal" },
 		);
 
 		assert.notEqual(result.status, 0);
