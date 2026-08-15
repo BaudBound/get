@@ -77,7 +77,68 @@ if [ -n "${BAUDBOUND_TEST_PLAN_ONLY:-}" ]; then
     exit 0
 fi
 
-command -v "$package_manager" >/dev/null 2>&1 \
-    || fail "required package manager ${package_manager} is not available."
+# Checked before anything is downloaded, so a system that cannot install the
+# package finds out before fetching it. The contract tests reach the download
+# path from a machine with no package manager, and skip only this check.
+if [ -z "${BAUDBOUND_TEST_NO_INSTALL:-}" ]; then
+    command -v "$package_manager" >/dev/null 2>&1 \
+        || fail "required package manager ${package_manager} is not available."
+fi
 
-fail "package download is not implemented until the first public app release."
+# jq is required rather than optional. The alternative is matching patterns
+# against JSON with line tools, which breaks the moment a field is reordered or
+# a value is escaped, and this parse decides which file gets installed with
+# elevated rights.
+for tool in curl sha256sum jq; do
+    command -v "$tool" >/dev/null 2>&1 \
+        || fail "required tool ${tool} is not available. Install it and run the installer again."
+done
+
+feed="${BAUDBOUND_TEST_FEED:-https://api.github.com/repos/BaudBound/baudbound/releases/latest}"
+
+release_json="$(curl --fail --silent --show-error --location "$feed")" \
+    || fail "could not reach the BaudBound release feed."
+
+asset_url="$(
+    printf '%s' "$release_json" \
+        | jq -r --arg suffix "$package_suffix" \
+            'first(.assets[] | select(.name | endswith($suffix)) | .browser_download_url) // empty'
+)" || fail "could not read the BaudBound release feed."
+[ -n "$asset_url" ] || fail "release has no asset ending in ${package_suffix}."
+
+sums_url="$(
+    printf '%s' "$release_json" \
+        | jq -r 'first(.assets[] | select(.name == "SHA256SUMS") | .browser_download_url) // empty'
+)" || fail "could not read the BaudBound release feed."
+[ -n "$sums_url" ] || fail "release has no SHA256SUMS manifest."
+
+work_directory="$(mktemp -d)"
+trap 'rm -rf "$work_directory"' EXIT
+chmod 700 "$work_directory"
+
+asset_name="${asset_url##*/}"
+curl --fail --silent --show-error --location --output "$work_directory/$asset_name" "$asset_url" \
+    || fail "could not download ${asset_name}."
+curl --fail --silent --show-error --location --output "$work_directory/SHA256SUMS" "$sums_url" \
+    || fail "could not download the checksum manifest."
+
+expected_digest="$(awk -v name="$asset_name" '$2 == name { print $1; exit }' "$work_directory/SHA256SUMS")"
+[ -n "$expected_digest" ] || fail "${asset_name} is absent from the checksum manifest."
+
+actual_digest="$(sha256sum "$work_directory/$asset_name" | awk '{ print $1 }')"
+[ "$expected_digest" = "$actual_digest" ] \
+    || fail "${asset_name} checksum does not match the published manifest."
+
+printf 'BaudBound installer: verified %s\n' "$asset_name"
+
+if [ -n "${BAUDBOUND_TEST_NO_INSTALL:-}" ]; then
+    exit 0
+fi
+
+printf 'BaudBound installer: installing %s with %s. Administrator approval is required.\n' \
+    "$asset_name" "$package_manager"
+
+case "$package_manager" in
+    apt-get) sudo apt-get install --yes "$work_directory/$asset_name" ;;
+    dnf) sudo dnf install --assumeyes "$work_directory/$asset_name" ;;
+esac
