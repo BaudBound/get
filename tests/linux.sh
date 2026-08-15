@@ -5,12 +5,25 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 installer="$repository_root/public/linux"
 test_root="$(mktemp -d)"
+fixture_root="$test_root/fixture"
+fake_bin="$test_root/bin"
+port_file="$test_root/port"
+server_pid=""
 
 cleanup() {
+    if [[ -n "$server_pid" ]]; then
+        kill "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
     rm -rf "$test_root"
 }
 trap cleanup EXIT
 
+mkdir -p "$fixture_root" "$fake_bin"
+
+# The published installer refuses before doing anything. Everything below is
+# tested against a copy with that one line flipped, so the logic is covered
+# without shipping a runtime override on the public endpoint.
 if /bin/sh "$installer" >"$test_root/paused.out" 2>"$test_root/paused.err"; then
     echo "installer continued while downloads are paused" >&2
     exit 1
@@ -20,134 +33,371 @@ grep -Fq "downloads are paused until the first public app release" "$test_root/p
 grep -Fxq "downloads_enabled=0" "$installer" \
     || { echo "pause seam 'downloads_enabled=0' is missing from the installer" >&2; exit 1; }
 
-enabled="$test_root/linux-enabled"
-sed 's/^downloads_enabled=0$/downloads_enabled=1/' "$installer" >"$enabled"
-chmod +x "$enabled"
+enabled_installer="$test_root/linux-enabled"
+sed 's/^downloads_enabled=0$/downloads_enabled=1/' "$installer" >"$enabled_installer"
+chmod +x "$enabled_installer"
+installer="$enabled_installer"
 
-run_case() {
-    local machine="$1" os_id="$2" expected="$3"
-    local output
-    output="$(BAUDBOUND_TEST_UNAME_M="$machine" BAUDBOUND_TEST_OS_ID="$os_id" \
-        BAUDBOUND_TEST_PLAN_ONLY=1 /bin/sh "$enabled" 2>&1)" || true
-    printf '%s' "$output" | grep -Fq "$expected" \
-        || { echo "case $machine/$os_id expected '$expected', got: $output" >&2; exit 1; }
-}
-
-run_case x86_64 debian "amd64.deb"
-run_case x86_64 ubuntu "amd64.deb"
-run_case x86_64 fedora "x86_64.rpm"
-run_case aarch64 debian "arm64.deb"
-run_case aarch64 ubuntu "arm64.deb"
-run_case aarch64 fedora "aarch64.rpm"
-run_case arm64 debian "arm64.deb"
-run_case armv7l debian "unsupported CPU architecture"
-run_case i686 debian "unsupported CPU architecture"
-run_case riscv64 debian "unsupported CPU architecture"
-run_case x86_64 arch "no tested native package"
-
-# The format permits quoting, and a sourced file would have removed it for
-# free. Reading the value textually has to strip it deliberately, so it is
-# tested deliberately.
-os_release_case() {
-    local contents="$1" expected="$2"
-    local sandbox output
-    sandbox="$test_root/os-release-$RANDOM"
-    mkdir -p "$sandbox/etc"
-    printf '%s\n' "$contents" >"$sandbox/etc/os-release"
-    local scoped="$sandbox/linux"
-    sed "s#/etc/os-release#$sandbox/etc/os-release#g" "$enabled" >"$scoped"
-    output="$(BAUDBOUND_TEST_UNAME_M=aarch64 BAUDBOUND_TEST_PLAN_ONLY=1 \
-        /bin/sh "$scoped" 2>&1)" || true
-    printf '%s' "$output" | grep -Fq "$expected" \
-        || { echo "os-release case expected '$expected', got: $output" >&2; exit 1; }
-}
-
-os_release_case 'ID=debian' "arm64.deb"
-os_release_case 'ID="debian"' "arm64.deb"
-os_release_case "ID='debian'" "arm64.deb"
-os_release_case 'NAME="Whatever"
-ID=fedora
-VERSION_ID="43"' "aarch64.rpm"
-os_release_case 'NAME="No identifier here"' "could not identify this system"
-
-# Regression guard for the rule that /etc/os-release is read, never sourced.
-#
-# The installer parses the file, so the command substitution below is read as
-# literal text and refused by the character-class check. If the parser is ever
-# replaced by `. /etc/os-release`, the shell runs it instead, and the marker
-# file appears. Asserting the refusal message alone would not catch that: a
-# sourced file would also fail to identify the system, for a different reason,
-# and this test would pass while the rule had been broken.
-#
-# The marker is created inside this suite's own temporary directory and removed
-# with it. Creating an empty file is the least the probe can do and still be
-# observable from outside the installer's subshell.
-executed_marker="$test_root/os-release-was-executed"
-os_release_case \
-    'ID=debian$(touch '"$executed_marker"')' \
-    "could not identify this system"
-[[ ! -e "$executed_marker" ]] \
-    || { echo "/etc/os-release was executed rather than parsed" >&2; exit 1; }
-
-# Download, digest, and refusal paths.
-#
-# The feed and the assets are served over file:// rather than from a local HTTP
-# server, because curl treats both the same way and this keeps the suite free of
-# a server dependency it would otherwise need only here.
-serve_root="$test_root/serve"
-mkdir -p "$serve_root"
-serve_absolute="$(cd "$serve_root" && pwd)"
-if command -v cygpath >/dev/null 2>&1; then
-    # curl is a native Windows build under Git Bash and cannot open a POSIX
-    # path, so the URL carries the Windows form when the suite runs there.
-    base_url="file:///$(cygpath -m "$serve_absolute")"
-else
-    base_url="file://$serve_absolute"
+mkdir -p "$test_root/missing-dependencies"
+if PATH="$test_root/missing-dependencies" /bin/sh "$installer" >"$test_root/missing.out" 2>"$test_root/missing.err"; then
+    echo "installer continued without its required commands" >&2
+    exit 1
 fi
+grep -Fq "required commands are missing" "$test_root/missing.err"
+grep -Fq "No files were downloaded or installed." "$test_root/missing.err"
 
-# Stand-in package files. The installer never opens a package, it only checks
-# the digest, so any stable bytes will do and building a real .deb would test
-# nothing extra.
-printf 'arm64 package test contents' >"$serve_root/Baudbound_2.0.0_arm64.deb"
-printf 'amd64 package test contents' >"$serve_root/Baudbound_2.0.0_amd64.deb"
-write_sums() {
-    # Match the manifest the release publishes: "<hash>  <name>", with no
-    # binary-mode marker. sha256sum adds one under Git Bash, so the name is
-    # rebuilt rather than passed through.
-    (
-        cd "$serve_root"
-        sha256sum Baudbound_2.0.0_arm64.deb Baudbound_2.0.0_amd64.deb \
-            | awk '{ sub(/^\*/, "", $2); printf "%s  %s\n", $1, $2 }' >SHA256SUMS
-    )
-}
-write_sums
+printf 'test deb package\n' > "$fixture_root/Baudbound_9.9.9_amd64.deb"
+printf 'test rpm package\n' > "$fixture_root/Baudbound-9.9.9-1.x86_64.rpm"
+printf 'test arm64 deb package\n' > "$fixture_root/Baudbound_9.9.9_arm64.deb"
+printf 'test aarch64 rpm package\n' > "$fixture_root/Baudbound-9.9.9-1.aarch64.rpm"
+deb_digest="$(sha256sum "$fixture_root/Baudbound_9.9.9_amd64.deb" | cut -d ' ' -f 1)"
+rpm_digest="$(sha256sum "$fixture_root/Baudbound-9.9.9-1.x86_64.rpm" | cut -d ' ' -f 1)"
+arm_deb_digest="$(sha256sum "$fixture_root/Baudbound_9.9.9_arm64.deb" | cut -d ' ' -f 1)"
+arm_rpm_digest="$(sha256sum "$fixture_root/Baudbound-9.9.9-1.aarch64.rpm" | cut -d ' ' -f 1)"
 
-for fixture in release release-no-rpm; do
-    sed "s#__BASE__#$base_url#g" "$repository_root/tests/fixtures/$fixture.json" \
-        >"$serve_root/$fixture.json"
+python3 - "$fixture_root" "$port_file" <<'PY' &
+import http.server
+import os
+import socketserver
+import sys
+
+root, port_file = sys.argv[1:]
+os.chdir(root)
+handler = http.server.SimpleHTTPRequestHandler
+with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
+    with open(port_file, "w", encoding="ascii") as output:
+        output.write(str(server.server_address[1]))
+    server.serve_forever()
+PY
+server_pid=$!
+
+for _ in {1..50}; do
+    [[ -s "$port_file" ]] && break
+    sleep 0.1
 done
+[[ -s "$port_file" ]] || { echo "fixture server did not start" >&2; exit 1; }
 
-download_case() {
-    local machine="$1" os_id="$2" fixture="$3" expected="$4"
-    local output
-    output="$(BAUDBOUND_TEST_UNAME_M="$machine" BAUDBOUND_TEST_OS_ID="$os_id" \
-        BAUDBOUND_TEST_FEED="$base_url/$fixture.json" \
-        BAUDBOUND_TEST_NO_INSTALL=1 /bin/sh "$enabled" 2>&1)" || true
-    printf '%s' "$output" | grep -Fq "$expected" \
-        || { echo "download case $machine/$os_id expected '$expected', got: $output" >&2; exit 1; }
+port="$(cat "$port_file")"
+cat > "$fixture_root/release.json" <<JSON
+{
+  "tag_name": "v9.9.9",
+  "assets": [
+    {
+      "name": "Baudbound_9.9.9_amd64.deb",
+      "browser_download_url": "http://127.0.0.1:$port/Baudbound_9.9.9_amd64.deb",
+      "digest": "sha256:$deb_digest"
+    },
+    {
+      "name": "Baudbound-9.9.9-1.x86_64.rpm",
+      "browser_download_url": "http://127.0.0.1:$port/Baudbound-9.9.9-1.x86_64.rpm",
+      "digest": "sha256:$rpm_digest"
+    },
+    {
+      "name": "Baudbound_9.9.9_arm64.deb",
+      "browser_download_url": "http://127.0.0.1:$port/Baudbound_9.9.9_arm64.deb",
+      "digest": "sha256:$arm_deb_digest"
+    },
+    {
+      "name": "Baudbound-9.9.9-1.aarch64.rpm",
+      "browser_download_url": "http://127.0.0.1:$port/Baudbound-9.9.9-1.aarch64.rpm",
+      "digest": "sha256:$arm_rpm_digest"
+    }
+  ]
+}
+JSON
+
+cat > "$fake_bin/sudo" <<'SH'
+#!/bin/sh
+exec "$@"
+SH
+cat > "$fake_bin/uname" <<'SH'
+#!/bin/sh
+case "${1:-}" in
+    -s) printf '%s\n' "${BAUDBOUND_TEST_UNAME_S:-Linux}" ;;
+    -m) printf '%s\n' "${BAUDBOUND_TEST_UNAME_M:-x86_64}" ;;
+    *) exec /usr/bin/uname "$@" ;;
+esac
+SH
+cat > "$fake_bin/apt" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" > "$BAUDBOUND_TEST_COMMAND_FILE"
+SH
+cat > "$fake_bin/dnf" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" > "$BAUDBOUND_TEST_COMMAND_FILE"
+SH
+cat > "$fake_bin/dpkg-query" <<'SH'
+#!/bin/sh
+if [ -n "${BAUDBOUND_TEST_INSTALLED_VERSION:-}" ]; then
+    printf '%s' "$BAUDBOUND_TEST_INSTALLED_VERSION"
+    exit 0
+fi
+exit 1
+SH
+cat > "$fake_bin/dpkg" <<'SH'
+#!/bin/sh
+if [ "${1:-}" != "--compare-versions" ]; then
+    exit 1
+fi
+current="$2"
+operator="$3"
+available="$4"
+case "$operator:$current:$available" in
+    eq:*:*) [ "$current" = "$available" ] ;;
+    lt:9.8.0:9.9.9) exit 0 ;;
+    lt:*:*) exit 1 ;;
+    *) exit 1 ;;
+esac
+SH
+cat > "$fake_bin/dpkg-deb" <<'SH'
+#!/bin/sh
+# Reports the architecture of the package it was handed, so the installer's
+# metadata check is exercised rather than always agreeing.
+case "$3" in
+    Package) printf 'baudbound\n' ;;
+    Version) printf '9.9.9\n' ;;
+    Architecture)
+        # dpkg-deb --field <path> <Field>, so the package path is $2.
+        case "$2" in
+            *_arm64.deb) printf 'arm64\n' ;;
+            *) printf 'amd64\n' ;;
+        esac
+        ;;
+    *) exit 1 ;;
+esac
+SH
+cat > "$fake_bin/rpm" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = "--eval" ]; then
+    case "${BAUDBOUND_TEST_INSTALLED_VERSION:-}:${BAUDBOUND_AVAILABLE_VERSION:-}" in
+        9.8.0:9.9.9) printf '%s' '-1' ;;
+        9.9.9:9.9.9) printf '%s' '0' ;;
+        10.0.0:9.9.9) printf '%s' '1' ;;
+        *) exit 1 ;;
+    esac
+    exit 0
+fi
+case "${3:-}" in
+    '%{NAME}') [ "${1:-}" = "-qp" ] && printf 'baudbound' || exit 1 ;;
+    '%{VERSION}')
+        if [ "${1:-}" = "-qp" ]; then
+            printf '9.9.9'
+        elif [ "${1:-}" = "-q" ] && [ -n "${BAUDBOUND_TEST_INSTALLED_VERSION:-}" ]; then
+            printf '%s' "$BAUDBOUND_TEST_INSTALLED_VERSION"
+        else
+            exit 1
+        fi
+        ;;
+    '%{ARCH}')
+        # rpm -qp --queryformat <format> <path>, so the package path is $4.
+        if [ "${1:-}" = "-qp" ]; then
+            case "$4" in
+                *.aarch64.rpm) printf 'aarch64' ;;
+                *) printf 'x86_64' ;;
+            esac
+        else
+            exit 1
+        fi
+        ;;
+    *)
+        if [ "${1:-}" = "-q" ] && [ -n "${BAUDBOUND_TEST_INSTALLED_VERSION:-}" ]; then
+            printf '%s' "$BAUDBOUND_TEST_INSTALLED_VERSION"
+            exit 0
+        fi
+        exit 1
+        ;;
+esac
+SH
+chmod 0755 "$fake_bin"/*
+
+export PATH="$fake_bin:/usr/local/bin:/usr/bin:/bin"
+export BAUDBOUND_ALLOW_INSECURE_TEST_URL=1
+export BAUDBOUND_RELEASE_API_URL="http://127.0.0.1:$port/release.json"
+export BAUDBOUND_APPIMAGE_PATH="$test_root/no-appimage"
+export BAUDBOUND_APPIMAGE_COMMAND_PATH="$test_root/no-command"
+export BAUDBOUND_APPIMAGE_LAUNCHER_PATH="$test_root/no-launcher"
+export BAUDBOUND_APPIMAGE_IDENTIFIER_LAUNCHER_PATH="$test_root/no-identifier-launcher"
+
+run_installer() {
+    script --quiet --return --command "sh '$installer'" /dev/null
 }
 
-download_case aarch64 debian release "verified Baudbound_2.0.0_arm64.deb"
-download_case x86_64 debian release "verified Baudbound_2.0.0_amd64.deb"
+cat > "$test_root/debian-os-release" <<'EOF'
+ID=debian
+PRETTY_NAME="Debian GNU/Linux 13"
+EOF
+export BAUDBOUND_OS_RELEASE_FILE="$test_root/debian-os-release"
+export BAUDBOUND_TEST_COMMAND_FILE="$test_root/debian-command"
+debian_output="$(run_installer)"
+grep -Fq "Detected Debian GNU/Linux 13" <<< "$debian_output"
+grep -Fq "use the deb package and APT" <<< "$debian_output"
+grep -Fq "BaudBound 9.9.9 is installed" <<< "$debian_output"
+grep -Eq '^install .*/Baudbound_9\.9\.9_amd64\.deb$' "$BAUDBOUND_TEST_COMMAND_FILE"
 
-# The complete fixture lists an x86_64 RPM, so the missing-asset refusal is only
-# reachable against a release that genuinely lacks one.
-download_case x86_64 fedora release-no-rpm "release has no asset ending in .x86_64.rpm"
+rm -f "$BAUDBOUND_TEST_COMMAND_FILE"
+export BAUDBOUND_TEST_INSTALLED_VERSION=9.9.9
+debian_current_output="$(run_installer)"
+grep -Fq "BaudBound 9.9.9 is already installed and up to date" <<< "$debian_current_output"
+[[ ! -e "$BAUDBOUND_TEST_COMMAND_FILE" ]] || {
+    echo "installer invoked APT for an already current package" >&2
+    exit 1
+}
+unset BAUDBOUND_TEST_INSTALLED_VERSION
 
-# Replace the payload after the manifest was written, so the published digest
-# no longer describes the bytes being served.
-printf 'different contents than the manifest describes' \
-    >"$serve_root/Baudbound_2.0.0_arm64.deb"
-download_case aarch64 debian release "checksum does not match"
+export BAUDBOUND_APPIMAGE_PATH="$test_root/BaudBound.AppImage"
+printf 'old AppImage\n' > "$BAUDBOUND_APPIMAGE_PATH"
+if run_installer >"$test_root/appimage.out" 2>"$test_root/appimage.err"; then
+    echo "installer accepted a conflicting AppImage installation" >&2
+    exit 1
+fi
+grep -Fq "an existing AppImage installation was found" "$test_root/appimage.out" "$test_root/appimage.err"
+grep -Fq "No files were downloaded or installed" "$test_root/appimage.out" "$test_root/appimage.err"
+rm -f "$BAUDBOUND_APPIMAGE_PATH"
+export BAUDBOUND_APPIMAGE_PATH="$test_root/no-appimage"
 
-printf 'Linux installer architecture, distribution, and download tests passed.\n'
+export BAUDBOUND_TEST_INSTALLED_VERSION=9.8.0
+debian_update_output="$(run_installer)"
+grep -Fq "Updating BaudBound from 9.8.0 to 9.9.9 with APT" <<< "$debian_update_output"
+unset BAUDBOUND_TEST_INSTALLED_VERSION
+
+export BAUDBOUND_TEST_INSTALLED_VERSION=10.0.0
+if run_installer >"$test_root/downgrade.out" 2>"$test_root/downgrade.err"; then
+    echo "installer accepted a package downgrade" >&2
+    exit 1
+fi
+grep -Fq "installed BaudBound 10.0.0 is newer than release 9.9.9" \
+    "$test_root/downgrade.out" "$test_root/downgrade.err"
+grep -Fq "Downgrades are not supported" "$test_root/downgrade.out" "$test_root/downgrade.err"
+unset BAUDBOUND_TEST_INSTALLED_VERSION
+
+cat > "$test_root/ubuntu-os-release" <<'EOF'
+ID=ubuntu
+PRETTY_NAME="Ubuntu"
+EOF
+export BAUDBOUND_OS_RELEASE_FILE="$test_root/ubuntu-os-release"
+export BAUDBOUND_TEST_COMMAND_FILE="$test_root/ubuntu-command"
+ubuntu_output="$(run_installer)"
+grep -Fq "Detected Ubuntu" <<< "$ubuntu_output"
+grep -Fq "use the deb package and APT" <<< "$ubuntu_output"
+grep -Eq '^install .*/Baudbound_9\.9\.9_amd64\.deb$' "$BAUDBOUND_TEST_COMMAND_FILE"
+
+cat > "$test_root/fedora-os-release" <<'EOF'
+ID=fedora
+PRETTY_NAME="Fedora Linux"
+EOF
+export BAUDBOUND_OS_RELEASE_FILE="$test_root/fedora-os-release"
+export BAUDBOUND_TEST_COMMAND_FILE="$test_root/fedora-command"
+fedora_output="$(run_installer)"
+grep -Fq "Detected Fedora Linux" <<< "$fedora_output"
+grep -Fq "use the rpm package and DNF" <<< "$fedora_output"
+grep -Eq '^install .*/Baudbound-9\.9\.9-1\.x86_64\.rpm$' "$BAUDBOUND_TEST_COMMAND_FILE"
+
+rm -f "$BAUDBOUND_TEST_COMMAND_FILE"
+export BAUDBOUND_TEST_INSTALLED_VERSION=9.9.9
+fedora_current_output="$(run_installer)"
+grep -Fq "BaudBound 9.9.9 is already installed and up to date" <<< "$fedora_current_output"
+[[ ! -e "$BAUDBOUND_TEST_COMMAND_FILE" ]] || {
+    echo "installer invoked DNF for an already current package" >&2
+    exit 1
+}
+
+export BAUDBOUND_TEST_INSTALLED_VERSION=9.8.0
+fedora_update_output="$(run_installer)"
+grep -Fq "Updating BaudBound from 9.8.0 to 9.9.9 with DNF" <<< "$fedora_update_output"
+
+export BAUDBOUND_TEST_INSTALLED_VERSION=10.0.0
+if run_installer >"$test_root/rpm-downgrade.out" 2>"$test_root/rpm-downgrade.err"; then
+    echo "installer accepted an RPM package downgrade" >&2
+    exit 1
+fi
+grep -Fq "installed BaudBound 10.0.0 is newer than release 9.9.9" \
+    "$test_root/rpm-downgrade.out" "$test_root/rpm-downgrade.err"
+unset BAUDBOUND_TEST_INSTALLED_VERSION
+
+cat > "$test_root/arch-os-release" <<'EOF'
+ID=arch
+PRETTY_NAME="Arch Linux"
+EOF
+export BAUDBOUND_OS_RELEASE_FILE="$test_root/arch-os-release"
+if run_installer >"$test_root/arch.out" 2>"$test_root/arch.err"; then
+    echo "installer accepted an unsupported distribution" >&2
+    exit 1
+fi
+grep -Fq "Arch Linux is not supported by the automatic installer" "$test_root/arch.out" "$test_root/arch.err"
+grep -Fq "No files were downloaded or installed" "$test_root/arch.out" "$test_root/arch.err"
+grep -Fq "GitHub Releases" "$test_root/arch.out" "$test_root/arch.err"
+
+# ARM64 selects the packages Debian and RPM each name differently for it.
+export BAUDBOUND_OS_RELEASE_FILE="$test_root/debian-os-release"
+export BAUDBOUND_TEST_COMMAND_FILE="$test_root/arm-debian-command"
+export BAUDBOUND_TEST_UNAME_M=aarch64
+arm_debian_output="$(run_installer)"
+grep -Fq "Detected Debian GNU/Linux 13 on 64-bit aarch64 Linux" <<< "$arm_debian_output"
+grep -Eq '^install .*/Baudbound_9\.9\.9_arm64\.deb$' "$BAUDBOUND_TEST_COMMAND_FILE"
+
+export BAUDBOUND_OS_RELEASE_FILE="$test_root/fedora-os-release"
+export BAUDBOUND_TEST_COMMAND_FILE="$test_root/arm-fedora-command"
+arm_fedora_output="$(run_installer)"
+grep -Fq "Detected Fedora Linux on 64-bit aarch64 Linux" <<< "$arm_fedora_output"
+grep -Eq '^install .*/Baudbound-9\.9\.9-1\.aarch64\.rpm$' "$BAUDBOUND_TEST_COMMAND_FILE"
+
+# arm64 is the same machine reported under another name.
+export BAUDBOUND_OS_RELEASE_FILE="$test_root/debian-os-release"
+export BAUDBOUND_TEST_COMMAND_FILE="$test_root/arm-alias-command"
+export BAUDBOUND_TEST_UNAME_M=arm64
+arm_alias_output="$(run_installer)"
+grep -Fq "on 64-bit aarch64 Linux" <<< "$arm_alias_output"
+grep -Eq '^install .*/Baudbound_9\.9\.9_arm64\.deb$' "$BAUDBOUND_TEST_COMMAND_FILE"
+
+for unsupported_machine in armv7l i686 riscv64; do
+    export BAUDBOUND_TEST_UNAME_M="$unsupported_machine"
+    if run_installer >"$test_root/architecture.out" 2>"$test_root/architecture.err"; then
+        echo "installer accepted unsupported architecture $unsupported_machine" >&2
+        exit 1
+    fi
+    grep -Fq "only 64-bit x86 and ARM Linux are currently supported" \
+        "$test_root/architecture.out" "$test_root/architecture.err"
+done
+unset BAUDBOUND_TEST_UNAME_M
+
+export BAUDBOUND_OS_RELEASE_FILE="$test_root/ubuntu-os-release"
+cp "$fixture_root/release.json" "$fixture_root/release-valid.json"
+jq 'del(.assets[] | select(.name | endswith(".deb")))' \
+    "$fixture_root/release-valid.json" > "$fixture_root/release.json"
+if run_installer >"$test_root/missing-asset.out" 2>"$test_root/missing-asset.err"; then
+    echo "installer continued without a Debian release asset" >&2
+    exit 1
+fi
+grep -Fq "exactly one deb package for amd64" "$test_root/missing-asset.out" "$test_root/missing-asset.err"
+cp "$fixture_root/release-valid.json" "$fixture_root/release.json"
+
+missing_apt_bin="$test_root/no-apt-bin"
+mkdir -p "$missing_apt_bin"
+for command_name in curl id jq mktemp rm sha256sum tr; do
+    ln -s "$(command -v "$command_name")" "$missing_apt_bin/$command_name"
+done
+for command_name in dpkg dpkg-deb dpkg-query sudo uname; do
+    ln -s "$fake_bin/$command_name" "$missing_apt_bin/$command_name"
+done
+if script --quiet --return \
+    --command "env PATH='$missing_apt_bin' /bin/sh '$installer'" /dev/null \
+    >"$test_root/missing-apt.out" 2>"$test_root/missing-apt.err"; then
+    echo "installer continued without APT" >&2
+    exit 1
+fi
+grep -Fq "required commands for Ubuntu are missing: apt" "$test_root/missing-apt.out" "$test_root/missing-apt.err"
+
+if setsid -w /bin/sh "$installer" </dev/null >"$test_root/noninteractive.out" 2>"$test_root/noninteractive.err"; then
+    echo "installer continued without an interactive terminal" >&2
+    exit 1
+fi
+grep -Fq "an interactive terminal is required" "$test_root/noninteractive.out" "$test_root/noninteractive.err"
+
+sed -i "s/sha256:$deb_digest/sha256:$(printf '%064d' 0)/" "$fixture_root/release.json"
+if run_installer >"$test_root/corrupt.out" 2>"$test_root/corrupt.err"; then
+    echo "installer accepted a corrupt checksum" >&2
+    exit 1
+fi
+grep -Fq "checksum does not match" "$test_root/corrupt.out" "$test_root/corrupt.err"
+
+printf 'Linux installer tests passed.\n'

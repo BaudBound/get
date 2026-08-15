@@ -1,8 +1,0 @@
-{
-  "tag_name": "v2.0.0",
-  "assets": [
-    { "name": "Baudbound_2.0.0_amd64.deb", "browser_download_url": "__BASE__/Baudbound_2.0.0_amd64.deb" },
-    { "name": "Baudbound_2.0.0_arm64.deb", "browser_download_url": "__BASE__/Baudbound_2.0.0_arm64.deb" },
-    { "name": "SHA256SUMS", "browser_download_url": "__BASE__/SHA256SUMS" }
-  ]
-}
