@@ -55,20 +55,34 @@ rpm_digest="$(sha256sum "$fixture_root/Baudbound-9.9.9-1.x86_64.rpm" | cut -d ' 
 arm_deb_digest="$(sha256sum "$fixture_root/Baudbound_9.9.9_arm64.deb" | cut -d ' ' -f 1)"
 arm_rpm_digest="$(sha256sum "$fixture_root/Baudbound-9.9.9-1.aarch64.rpm" | cut -d ' ' -f 1)"
 
-python3 - "$fixture_root" "$port_file" <<'PY' &
-import http.server
-import os
-import socketserver
-import sys
+cat > "$test_root/fixture-server.mjs" <<'JS'
+import { createReadStream, statSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { join, resolve, sep } from "node:path";
 
-root, port_file = sys.argv[1:]
-os.chdir(root)
-handler = http.server.SimpleHTTPRequestHandler
-with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
-    with open(port_file, "w", encoding="ascii") as output:
-        output.write(str(server.server_address[1]))
-    server.serve_forever()
-PY
+const root = resolve(process.argv[2]);
+const portFile = process.argv[3];
+
+const server = createServer((request, response) => {
+	const requested = new URL(request.url, "http://127.0.0.1").pathname;
+	// Both sides are resolved before comparing. Comparing a joined path against
+	// the argument as given comes apart wherever the separators differ.
+	const path = resolve(join(root, decodeURIComponent(requested).replace(/^[/\\]+/, "")));
+
+	if (!path.startsWith(root + sep) || !statSync(path, { throwIfNoEntry: false })?.isFile()) {
+		response.writeHead(404).end();
+		return;
+	}
+
+	response.writeHead(200, { "content-type": "application/octet-stream" });
+	createReadStream(path).pipe(response);
+});
+
+server.listen(0, "127.0.0.1", () => {
+	writeFileSync(portFile, String(server.address().port), "utf8");
+});
+JS
+node "$test_root/fixture-server.mjs" "$fixture_root" "$port_file" &
 server_pid=$!
 
 for _ in {1..50}; do
