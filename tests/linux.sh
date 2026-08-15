@@ -70,10 +70,24 @@ ID=fedora
 VERSION_ID="43"' "aarch64.rpm"
 os_release_case 'NAME="No identifier here"' "could not identify this system"
 
-# A sourced os-release would run this. A parsed one reports the value and the
-# character-class check refuses it.
-os_release_case 'ID=debian$(touch '"$test_root"'/pwned)' "could not identify this system"
-[[ ! -e "$test_root/pwned" ]] || { echo "os-release contents were executed" >&2; exit 1; }
+# Regression guard for the rule that /etc/os-release is read, never sourced.
+#
+# The installer parses the file, so the command substitution below is read as
+# literal text and refused by the character-class check. If the parser is ever
+# replaced by `. /etc/os-release`, the shell runs it instead, and the marker
+# file appears. Asserting the refusal message alone would not catch that: a
+# sourced file would also fail to identify the system, for a different reason,
+# and this test would pass while the rule had been broken.
+#
+# The marker is created inside this suite's own temporary directory and removed
+# with it. Creating an empty file is the least the probe can do and still be
+# observable from outside the installer's subshell.
+executed_marker="$test_root/os-release-was-executed"
+os_release_case \
+    'ID=debian$(touch '"$executed_marker"')' \
+    "could not identify this system"
+[[ ! -e "$executed_marker" ]] \
+    || { echo "/etc/os-release was executed rather than parsed" >&2; exit 1; }
 
 # Download, digest, and refusal paths.
 #
@@ -91,8 +105,11 @@ else
     base_url="file://$serve_absolute"
 fi
 
-printf 'fake-arm64-deb-payload' >"$serve_root/Baudbound_2.0.0_arm64.deb"
-printf 'fake-amd64-deb-payload' >"$serve_root/Baudbound_2.0.0_amd64.deb"
+# Stand-in package files. The installer never opens a package, it only checks
+# the digest, so any stable bytes will do and building a real .deb would test
+# nothing extra.
+printf 'arm64 package test contents' >"$serve_root/Baudbound_2.0.0_arm64.deb"
+printf 'amd64 package test contents' >"$serve_root/Baudbound_2.0.0_amd64.deb"
 write_sums() {
     # Match the manifest the release publishes: "<hash>  <name>", with no
     # binary-mode marker. sha256sum adds one under Git Bash, so the name is
@@ -127,7 +144,10 @@ download_case x86_64 debian release "verified Baudbound_2.0.0_amd64.deb"
 # reachable against a release that genuinely lacks one.
 download_case x86_64 fedora release-no-rpm "release has no asset ending in .x86_64.rpm"
 
-printf 'corrupted' >"$serve_root/Baudbound_2.0.0_arm64.deb"
+# Replace the payload after the manifest was written, so the published digest
+# no longer describes the bytes being served.
+printf 'different contents than the manifest describes' \
+    >"$serve_root/Baudbound_2.0.0_arm64.deb"
 download_case aarch64 debian release "checksum does not match"
 
 printf 'Linux installer architecture, distribution, and download tests passed.\n'
