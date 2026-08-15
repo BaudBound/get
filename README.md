@@ -6,7 +6,7 @@ The Linux and Windows scripts detect the local platform, download a published pa
 
 ## Test
 
-Linux tests require Bash, jq, shellcheck, and Docker.
+Linux tests require Bash, Node, jq, shellcheck, and Docker. Node runs the fixture release server the installer tests download from.
 
 ```bash
 bash tests/linux.sh
